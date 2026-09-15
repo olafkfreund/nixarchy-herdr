@@ -43,8 +43,8 @@ takes too many steps.
 - Everything `jankeesvw.herdr` does today keeps working: the bar badge, the
   attention ordering, kill with confirmation, delete of stopped sessions, and
   the pinned panel.
-- The plugin is built in its own repository so it can grow in small steps,
-  with hot reload during development.
+- The plugin is built in its own repository, `olafkfreund/omarchy-herdr`, so it
+  can grow in small steps, with hot reload during development.
 
 ## Affected users and systems
 
@@ -88,9 +88,11 @@ takes too many steps.
 3. Should remote hosts be reached through plain `ssh <host> herdr ...`, or
    through herdr's own saved machines (`herdr machine add`, `--machine`)?
    The latter prepares the remote server when it is added.
-4. Where does the repository live: a public fork `olafkfreund/omarchy-herdr`,
-   a private repository, or local only for now? And should generally useful
-   parts go back upstream as pull requests?
+4. ~~Where does the repository live?~~ Decided 2026-09-15: our own public,
+   non-fork repository `olafkfreund/omarchy-herdr`, checked out at
+   `~/Source-home/GitHub/omarchy-herdr`, with jankeesvw's history kept and
+   `upstream` fetch-only. Still open: should generally useful parts go back
+   upstream as pull requests?
 5. Which keybind chord opens the menu?
 6. Should a prompt to an agent that is `working` or `blocked` be refused,
    queued, or sent after a confirmation?
