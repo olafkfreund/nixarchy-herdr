@@ -43,8 +43,8 @@ import qs.Ui
 Panel {
   id: root
 
-  moduleName: "jankeesvw.herdr"
-  ipcTarget: "jankeesvw.herdr"
+  moduleName: "nixarchy.herdr"
+  ipcTarget: "nixarchy.herdr"
 
   // The script sits next to this file, so the plugin runs from wherever it
   // was installed without putting anything on $PATH.

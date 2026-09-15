@@ -1,7 +1,9 @@
-# Herdr for Omarchy
+# Herdr for Nixarchy
 
-A bar widget for [herdr](https://herdr.dev): how many herdr servers are
-running, what is inside each one, and one click to open it.
+A herdr plugin for the Omarchy shell on Nixarchy, based on
+[jankeesvw/omarchy-herdr](https://github.com/jankeesvw/omarchy-herdr) (MIT).
+It starts as that bar widget: how many herdr servers are running, what is
+inside each one, and one click to open it.
 
 Herdr runs one server per named session. They are easy to start and they never
 stop by themselves, because closing a window detaches rather than ends the
@@ -113,7 +115,7 @@ A dropdown is something you open to answer a question and close again. A herd yo
 Position, size and screen are kept in this widget's own entry in `~/.config/omarchy/shell.json`, the same entry the bar's settings screen reads, so there is no config file of its own to keep track of:
 
 ```json
-{ "id": "jankeesvw.herdr", "pinned": true, "pinScreen": "DP-3", "pinX": 54, "pinY": 1404, "pinW": 420, "pinH": 240 }
+{ "id": "nixarchy.herdr", "pinned": true, "pinScreen": "DP-3", "pinX": 54, "pinY": 1404, "pinW": 420, "pinH": 240 }
 ```
 
 ## Screenshots
@@ -137,9 +139,9 @@ real server.
 ## Installing it
 
 ```bash
-omarchy plugin add https://github.com/jankeesvw/omarchy-herdr
-omarchy plugin enable jankeesvw.herdr
-omarchy bar move jankeesvw.herdr --section right
+omarchy plugin add https://github.com/olafkfreund/nixarchy-herdr
+omarchy plugin enable nixarchy.herdr
+omarchy bar move nixarchy.herdr --section right
 ```
 
 Needs `herdr`, `jq` and `hyprctl` on `$PATH`. The last one is what pairs a
@@ -152,8 +154,8 @@ session's socket, and a window is opened in `foot`, falling back to
 ## Removing it
 
 ```bash
-omarchy plugin disable jankeesvw.herdr
-omarchy plugin remove jankeesvw.herdr
+omarchy plugin disable nixarchy.herdr
+omarchy plugin remove nixarchy.herdr
 ```
 
 The widget keeps no cache of your work: every value on screen is read from
