@@ -15,6 +15,8 @@
 #   delete <name> remove a stopped session's directory
 #   new <name> [dir]
 #                 start a session that does not exist yet, opened in dir
+#   prompt <name> <pane>
+#                 send stdin to that agent, wait for it, print what it shows
 #   --host <h> <command>
 #                 run any of the above against another machine over ssh
 #   demo on|off   invented sessions instead of yours, for screenshots
@@ -130,13 +132,14 @@ valid_host() {
 # one remote command line, so callers pass a single string built with
 # `printf %q`. BatchMode means a missing key fails instead of prompting inside
 # a shell that has no terminal, and the control socket keeps a 3s poll to one
-# handshake a minute.
+# handshake a minute. A second argument raises the 8s ceiling for the one
+# call that waits on an agent.
 ssh_run() {
   local -a opts=(-o BatchMode=yes -o ConnectTimeout=4)
   [[ -n ${XDG_RUNTIME_DIR-} && -d ${XDG_RUNTIME_DIR-} ]] &&
     opts+=(-o ControlMaster=auto -o ControlPersist=60
            -o "ControlPath=$XDG_RUNTIME_DIR/nixarchy-herdr-%C")
-  timeout 8 ssh "${opts[@]}" -- "$HOST" "$1"
+  timeout "${2:-8}" ssh "${opts[@]}" -- "$HOST" "$1"
 }
 
 # A herdr started from inside a herdr pane refuses to run ("nested herdr is
@@ -680,6 +683,53 @@ cmd_new() {
   printf '{"ok":true}\n'
 }
 
+# ----------------------------------------------------------------- prompt
+
+# Hand an agent a short instruction and wait for it to answer.
+#
+# The text arrives on stdin, never as an argument, so the panel does not have
+# to quote it. Over ssh it stays on stdin as well: the remote command is a
+# fixed `bash -c` that reads it into a variable, so nothing the text contains
+# is ever part of a command line on the other machine, whatever shell that
+# machine logs into.
+#
+# Waiting stops on idle, done or blocked, which are the states that want you
+# back. What comes back is the agent's own screen, capped like any other
+# output this script reads. Nothing is written to disk.
+cmd_prompt() {
+  local name="${1-}" pane="${2-}"
+  valid_session_name "$name" || die "not a session name"
+  valid_pane_id "$pane" || die "not a pane id"
+
+  local text
+  text=$(head -c 16384)
+  [[ -n ${text//[[:space:]]/} ]] || die "nothing to send"
+
+  local -a base=(herdr)
+  [[ $name == default ]] || base+=(--session "$name")
+  local -a wait_for=(--wait --until 'idle' --until 'done' --until 'blocked')
+
+  local answer screen
+  if [[ -n $HOST ]]; then
+    # shellcheck disable=SC2016 # expanded by the remote bash, not here
+    answer=$(printf '%s' "$text" | ssh_run "$(printf '%q ' bash -c 't=$(cat); "$@" "$t" '"${wait_for[*]}" \
+      _ "${base[@]}" agent prompt "$pane")" 305 2>/dev/null) || true
+    screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" \
+      </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+  else
+    answer=$(timeout 300 "${base[@]}" agent prompt "$pane" "$text" "${wait_for[@]}" </dev/null 2>/dev/null) || true
+    screen=$("${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+  fi
+  over_byte_cap "$screen" "$SNAPSHOT_BYTE_CAP" && screen=${screen:0:SNAPSHOT_BYTE_CAP}
+
+  local status
+  status=$(printf '%s' "$answer" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || true
+  [[ -n $answer ]] || [[ -n $screen ]] || die "could not reach that agent"
+  jq -cn --arg status "${status:-timeout}" --arg output "$screen" \
+    '{ok: true, status: $status, output: $output}'
+}
+
 # ------------------------------------------------------------ kill / delete
 
 # Which process is serving a session. Every herdr server has the same command
@@ -779,6 +829,7 @@ case "${1:-list}" in
   open) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_open "${1-}"; fi ;;
   focus) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_focus "${1-}" "${2-}"; fi ;;
   new) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_new "${1-}" "${2-}"; fi ;;
+  prompt) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_prompt "${1-}" "${2-}"; fi ;;
   kill|delete)
     action=$1; shift
     valid_session_name "${1-}" || die "not a session name"

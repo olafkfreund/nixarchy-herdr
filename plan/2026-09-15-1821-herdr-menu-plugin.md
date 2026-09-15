@@ -294,16 +294,51 @@ still show, as upstream intends.
 - Clean up with `kill` then `delete`, locally and over `--host razer`.
 
 ### 7. `bin/herdr-sessions`: `prompt`.
-- Set up: in a throwaway local session `nhtest-prompt`, start `claude` in
-  one pane and wait for it to reach `idle`.
+
+- `prompt S PANE` reads the text from stdin (16 KB cap, refuses whitespace
+  only), runs `agent prompt PANE "$text" --wait --until idle --until done
+  --until blocked` under `timeout 300`, then `agent read PANE --source
+  recent --lines 60`, and prints `{"ok":true,"status":…,"output":…}`.
+- Remotely the text stays on ssh's stdin: the remote command is a fixed
+  `bash -c 't=$(cat); "$@" "$t" …' _ herdr … agent prompt PANE`, every word
+  quoted with `printf %q`, so the text is never part of a remote command
+  line whatever shell the host logs into.
+- `ssh_run` takes an optional timeout (default 8s; the prompt call uses 305).
+
+Found in step 7:
+
+- `herdr agent read` prints the pane's screen as plain text, not JSON, so
+  the script JSON-encodes it.
+- A prompt's answer carries the state in `.result.agent.agent_status`;
+  `--wait` really waits (state_change_seq went idle → working → idle).
+- Starting an agent can land in `blocked`, which is a dialog on screen and
+  not a fault: Claude asks to trust an unfamiliar directory, and on razer it
+  also asks whether to use the `ANTHROPIC_API_KEY` in the environment. Start
+  test agents in a directory that is already trusted, and answer the API-key
+  question with its highlighted default, "No (recommended)".
+- An agent can exit on its own between tests, leaving the pane at a shell
+  prompt; `agent_not_found` then means "no agent there", not a broken call.
 
 → **Verify:**
-- `echo 'reply with only the word pong' | bin/herdr-sessions prompt nhtest-prompt <pane>`
-  prints `{"ok":true,...}` whose `output` contains `pong`.
-- A prompt of `'"; touch /tmp/nh-injected; "'` creates no
-  `/tmp/nh-injected`, both locally and with `--host razer` against a razer
-  test agent.
-- Clean up the test sessions.
+
+- Setup: `new nhtest-prompt ~/.config/nixos`, then
+  `agent start nhpong --kind claude --pane w1:p1 -- --model haiku`, waited
+  to `idle`.
+- `printf 'Reply with only the word pong-two.' | bin/herdr-sessions prompt
+  nhtest-prompt w1:p1` returns `ok:true`, `status:"idle"` in ~4s, and the
+  output contains `pong-two`.
+- The same against a razer agent through `--host razer` returns `ok:true`,
+  `status:"done"` in ~5s, with `pong-razer` in the output.
+- Whitespace-only text returns "nothing to send"; a malformed pane id
+  returns "not a pane id".
+- Two injection payloads (`"; touch /tmp/nh-injected; echo "` and
+  `$(touch /tmp/nh-injected)`) aimed at a pane that does not exist create no
+  marker on p620 or razer. Aimed at a missing pane on purpose, so no agent
+  can act on the text and only broken quoting could create it.
+- `grep -rln` over `~/.cache`, `~/.local/state` and `~/.config/omarchy`
+  finds no prompt or reply text.
+- Clean up both sessions with `kill` then `delete`, including the local
+  leftover directory the remote attach left behind.
 
 ### 8. `Menu.qml` (new), `manifest.json`, `~/.config/hypr/bindings.lua`: the menu.
 - Manifest kinds become `["menu","bar-widget"]`, with `keepLoaded: true`
