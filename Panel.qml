@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -181,25 +182,36 @@ Panel {
 
     iconComponent: Component {
       Item {
-        Text {
+        // herdr's own mark (assets/herdr-logo.svg without its background),
+        // tinted like a symbolic tray icon.
+        Image {
           id: serverIcon
           anchors.centerIn: parent
-          text: herd.iconServer
-          textFormat: Text.PlainText
-          font.family: root.fontFamily
-          font.pixelSize: Style.bar.iconFont
-          renderType: Text.NativeRendering
-          // barForeground, not the theme's foreground: on a transparent bar
-          // the shell picks the glyph colour off what is behind it, so the
-          // icon turns dark over a light wallpaper the way every other bar
-          // icon does. The theme foreground is only right where the panel
-          // paints its own background.
-          //
-          // Nothing here reacts to the panel being open: the bar draws that
-          // itself, as an accent line on the module's inner edge, for every
-          // widget that has a panel. Tinting the glyph as well says the same
-          // thing twice, in the one colour that means something else.
-          color: root.barForeground
+          width: Style.bar.iconFont
+          height: Style.bar.iconFont
+          source: Qt.resolvedUrl("assets/herdr-mark.svg")
+          sourceSize.width: Math.round(width * Screen.devicePixelRatio)
+          sourceSize.height: Math.round(height * Screen.devicePixelRatio)
+          fillMode: Image.PreserveAspectFit
+          visible: false
+          layer.enabled: true
+        }
+
+        // barForeground, not the theme's foreground: on a transparent bar
+        // the shell picks the glyph colour off what is behind it, so the
+        // icon turns dark over a light wallpaper the way every other bar
+        // icon does. The theme foreground is only right where the panel
+        // paints its own background.
+        //
+        // Nothing here reacts to the panel being open: the bar draws that
+        // itself, as an accent line on the module's inner edge, for every
+        // widget that has a panel. Tinting the glyph as well says the same
+        // thing twice, in the one colour that means something else.
+        MultiEffect {
+          anchors.fill: serverIcon
+          source: serverIcon
+          colorization: 1.0
+          colorizationColor: root.barForeground
         }
 
         // The server count rides the glyph's top-right corner, the way an

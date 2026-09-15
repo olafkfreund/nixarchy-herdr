@@ -110,6 +110,13 @@ opened.
   A timed-out call may still have been applied, so re-check with
   `omarchy plugin list --json`. A fresh `git clone` into the plugin directory
   triggers several hot reloads in a row.
+- Found in step 4b: "Local plugin changed, reloading" does not rebuild a bar
+  widget that is already on screen, and disabling then re-enabling the plugin
+  does not either. An on-screen check after a QML or asset change silently
+  runs the old component, so every on-screen verification from here on is
+  preceded by `omarchy restart shell` (announced on the agent bus). The
+  on-screen checks of steps 3 and 4 had run the step 2 component and are
+  repeated after the restart.
 - qmllint baseline for upstream `Panel.qml` + `Card.qml`: 0 errors and 721
   warnings, mostly unqualified `panel`/`root` access from nested components.
   Per type at `fa545a4`: 98 `[import]`, 1 `[inheritance-cycle]`,
@@ -188,24 +195,53 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
      least 1 for each.
    - By hand, nothing changes: open, focus agent, kill (Cancel), pin, `r`.
 
+4b. **`assets/`, `Panel.qml`, `HerdrModel.qml`, `README.md`: herdr logo.**
+    Added on request 2026-09-15, to promote herdr.
+    - `assets/herdr-logo.svg`: herdr's `assets/logo.svg`, unchanged
+      (herdrdev/herdr, Apache-2.0).
+    - `assets/herdr-mark.svg`: the same file with its background `<rect>`
+      removed and the mark's fill changed from `#303438` to `#ffffff`.
+      MultiEffect colorization keeps the source's luminance, so a dark mark
+      tints to near-black and cannot be seen on a dark bar; a white one takes
+      exactly `barForeground`. Its `viewBox` is cropped to `60 60 340 340`, the
+      head and horn, because the full logo's body runs off the edge and reads as a
+      blob at bar size.
+    - `Panel.qml`: the bar's server glyph becomes an `Image` of the mark
+      plus `MultiEffect { colorization: 1.0; colorizationColor: root.barForeground }`,
+      the pattern Omarchy's own `plugins/bar/widgets/Tray.qml` uses for
+      symbolic icons. The badge keeps anchoring to `serverIcon`.
+    - `HerdrModel.qml`: `iconServer` removed (no longer used).
+    - `README.md`: the logo at the top, credited to herdrdev/herdr under
+      Apache-2.0. Apache-2.0 §6 grants no trademark rights; the logo is
+      used only to identify herdr.
+
+    → **Verify:**
+    - `omarchy plugin validate` exits 0, and qmllint shows no new warning
+      type.
+    - The shell log has no errors from `nixarchy.herdr`.
+    - A bar screenshot shows the sheep mark in the bar foreground colour,
+      with the badge on its corner.
+
 5. **`bin/herdr-sessions`: hosts.**
-   - Add `ssh_run`, a leading `--host H` (validated), a `--no-windows` switch
+
+- Add `ssh_run`, a leading `--host H` (validated), a `--no-windows` switch
      for `list`, and `"host"` on every session.
-   - Change window matching to key on `host/session`.
-   - Make `open`, `focus`, `kill` and `delete` route over ssh when `--host`
+- Change window matching to key on `host/session`.
+- Make `open`, `focus`, `kill` and `delete` route over ssh when `--host`
      is given.
 
    → **Verify:**
-   - `bin/herdr-sessions list | jq -e '.sessions|all(has("host"))'` passes.
-   - `time bin/herdr-sessions --host razer list | jq -e '.sessions|all(.host=="razer")'`
+
+- `bin/herdr-sessions list | jq -e '.sessions|all(has("host"))'` passes.
+- `time bin/herdr-sessions --host razer list | jq -e '.sessions|all(.host=="razer")'`
      passes in under 8s.
-   - `bin/herdr-sessions --host 'bad;name' list` exits non-zero without
+- `bin/herdr-sessions --host 'bad;name' list` exits non-zero without
      and prints its "invalid host" error before any ssh is started.
-   - `bin/herdr-sessions --host nosuchhost list` exits non-zero within 8s.
-   - On p620, a window running `herdr --remote razer --session Razer` is not
+- `bin/herdr-sessions --host nosuchhost list` exits non-zero within 8s.
+- On p620, a window running `herdr --remote razer --session Razer` is not
      paired to a local session named `Razer`.
 
-6. **`bin/herdr-sessions`: `new`.**
+1. **`bin/herdr-sessions`: `new`.**
    → **Verify:**
    - `new -x`, `new 'a b'` and `new Devlopment-Local` each exit non-zero, and
      `herdr session list --json` is unchanged.
@@ -215,7 +251,7 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
      lists `nhtest-razer` running.
    - Clean up both with `kill` then `delete`.
 
-7. **`bin/herdr-sessions`: `prompt`.**
+2. **`bin/herdr-sessions`: `prompt`.**
    - Set up: in a throwaway local session `nhtest-prompt`, start `claude` in
      one pane and wait for it to reach `idle`.
 
@@ -227,7 +263,7 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
      test agent.
    - Clean up the test sessions.
 
-8. **`Menu.qml` (new), `manifest.json`, `~/.config/hypr/bindings.lua`: the
+3. **`Menu.qml` (new), `manifest.json`, `~/.config/hypr/bindings.lua`: the
    menu.**
    - Manifest kinds become `["menu","bar-widget"]`, with `keepLoaded: true`
      and `entryPoints.menu`.
@@ -244,7 +280,7 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
      `hyprctl clients -j | jq length`.
    - The bar badge still works alongside the menu.
 
-9. **`Menu.qml`, `HerdrModel.qml`: hosts in the menu.**
+4. **`Menu.qml`, `HerdrModel.qml`: hosts in the menu.**
    - Read `~/.config/omarchy/herdr.json`, poll one `Process` per host while
      the menu is open, and merge results with a host header and `●`/`○`/`–`.
    - `Tab` / `Shift+Tab` move between host groups.
@@ -262,7 +298,7 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
      within 10s, so there is no polling while closed.
    - `n` on razer creates a session (clean up after).
 
-10. **`Menu.qml`: prompt line.**
+5. **`Menu.qml`: prompt line.**
     - `a` opens a prompt line for the selected agent. `Enter` sends through
       `prompt` with the text written to the process's stdin; the reply
       replaces the line; `Esc` cancels and kills a running prompt.
@@ -276,7 +312,7 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
     - Closing the menu mid-prompt leaves no `herdr … agent prompt` process in
       `pgrep -af`.
 
-11. **`README.md`: rewrite.**
+6. **`README.md`: rewrite.**
     - Cover install (git clone plus enable), the `herdr.json` hosts file, the
       keybind, the menu keys, remote requirements (`bash`, `jq` and `herdr`
       on the host, BatchMode ssh), privacy (nothing written to disk) and
@@ -288,7 +324,7 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
     → **Verify** every item passes, with results recorded in the PR
     description.
 
-12. **PR.**
+7. **PR.**
     - `gh pr create --repo olafkfreund/nixarchy-herdr --base master`
     - The body links `intent/`, `spec/`, `plan/` and
       `olafkfreund/nixos_config#1821`, and lists the verification results.
@@ -296,7 +332,7 @@ Every step ends with one commit, `<type>(<scope>): … (#1821)`, then
     → **Verify** the PR exists and its diff contains only the files named in
     steps 1–11.
 
-13. **razer install.** After merge; no repo change.
+8. **razer install.** After merge; no repo change.
     - `git clone https://github.com/olafkfreund/nixarchy-herdr $P`
     - Write `{"hosts":["p620"]}` to `herdr.json`.
     - Disable `jankeesvw.herdr` if it is present, then enable

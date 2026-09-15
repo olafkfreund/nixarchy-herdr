@@ -1,7 +1,11 @@
+<p align="center"><img src="assets/herdr-logo.svg" alt="herdr logo" width="96" /></p>
+
 # Herdr for Nixarchy
 
 A herdr plugin for the Omarchy shell on Nixarchy, based on
 [jankeesvw/omarchy-herdr](https://github.com/jankeesvw/omarchy-herdr) (MIT).
+The herdr logo is from [herdrdev/herdr](https://github.com/herdrdev/herdr)
+(Apache-2.0) and is used to identify herdr.
 It starts as that bar widget: how many herdr servers are running, what is
 inside each one, and one click to open it.
 

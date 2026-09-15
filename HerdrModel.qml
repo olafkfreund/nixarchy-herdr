@@ -29,7 +29,6 @@ Item {
   readonly property string script:
     Qt.resolvedUrl("bin/herdr-sessions").toString().replace(/^file:\/\//, "")
 
-  readonly property string iconServer: "\uF233"
   readonly property string iconDot: "\uF111"
   readonly property string iconOpen: "\uF2D2"
   readonly property string iconTrash: "\uF1F8"
