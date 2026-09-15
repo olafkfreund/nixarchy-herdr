@@ -566,6 +566,76 @@ steps 1–11.
 → **Verify** that `SUPER+SHIFT+H` on razer lists razer and p620 sessions
 and focuses a p620 agent through a `--remote p620` window.
 
+### 14. Keybinding docs and an Omarchy Learn menu entry.
+
+**Status: approved 2026-09-15** (added on request; steps 0–13
+remain approved and done). Branch `docs/1821-keybinding-docs`, PR into
+`master`.
+
+Why: the plugin's keys live only in the code and a short README table, and
+Omarchy's Keybindings menu shows `SUPER SHIFT + H` as just "Herdr", the same
+label as Omarchy's own `SUPER CTRL + RETURN → Herdr` launcher.
+
+Facts this rests on (checked 2026-09-15):
+
+- Omarchy's **Learn** menu already lists per-app keybinding sheets
+  (`learn.tmux-keybindings`, `learn.herdr-keybindings`). Each row runs a
+  script that prints `KEY → description` lines into
+  `omarchy-menu-select '<title>' -- --width 800 --height <40% of screen>`.
+- Rows can be added in the writable, per-host
+  `~/.config/omarchy/extensions/omarchy-menu.jsonc`, merged over the defaults
+  by id. Menu actions run through `bash -lc`, so `~` paths work.
+- The main Keybindings menu (`omarchy-menu-keybindings`) reads each
+  `o.bind(..., "<description>", ...)` from Hyprland, so the label comes from
+  `bindings.lua`.
+- The in-menu keys (`j`, `k`, `K`, `x`, `n`, `a`…) are handled by the card
+  only while the menu has keyboard focus. They must **not** become Hyprland
+  bindings: binding those letters globally would take them from every window.
+  They are shown, not bound.
+
+Changes:
+
+1. `bin/herdr-menu-keys` (new, plugin repo): prints the plugin's keys as
+   `KEY → description`, grouped with header rows (Open, Move, Act, Menu only,
+   Bar panel only, Input line, Confirm dialog). With `--print` it only prints;
+   otherwise it shows them with `omarchy-menu-select 'Herdr plugin keys'`,
+   using the same width and height rule as Omarchy's own Herdr sheet. It holds
+   no state and runs nothing else.
+2. `README.md` (plugin repo): a **Keybindings** section with the full tables,
+   replacing the short table in "The menu". It covers opening the menu (the
+   chord, clicking and middle-clicking the icon), moving (`↑↓ jk`, `←→ hl`,
+   `Tab`), acting (`Enter`/`Space`, `o`, `K`, `x`, `r`, `Esc`), menu-only keys
+   (`n`, `a`), the bar-panel-only `p`, the input line (`Enter`, `Esc`) and
+   confirm dialogs (`←→`, `Enter`, `Esc`). It also documents the Learn row
+   and how to add it.
+3. On **p620 and razer** (user config, not the repo):
+   - `~/.config/omarchy/extensions/omarchy-menu.jsonc`: add
+     `"learn.herdr-plugin-keybindings": {"icon": "", "label": "Herdr plugin",
+     "action": "~/.config/omarchy/plugins/nixarchy.herdr/bin/herdr-menu-keys"}`,
+     keeping every existing row. Back the file up first.
+   - `~/.config/hypr/bindings.lua`: change the bind's description from
+     `"Herdr"` to `"Herdr sessions menu"`, then `hyprctl reload`.
+   - Update the plugin clone to the merged `master` (`git pull --ff-only`).
+
+→ **Verify:**
+
+- `bin/herdr-menu-keys --print` lists every key in the tables above, and
+  shellcheck adds no warning.
+- `omarchy-menu-keybindings --print | grep "Herdr sessions menu"` shows
+  `SUPER SHIFT + H` on both hosts, and the old bare "Herdr" row for that chord
+  is gone.
+- The extension file still parses (the menu opens and its existing rows are
+  present). The **Learn** submenu shows **Herdr plugin**, which opens the key
+  sheet: on screen on p620, and by checking the merged row via the menu model
+  on razer while its display is disabled.
+- No new Hyprland binding exists for `j`, `k`, `K`, `x`, `n`, `a`, `o` or `r`
+  (`hyprctl binds -j` count for unmodified letters unchanged).
+- markdownlint adds no new structural warnings to the README.
+
+**Rollback:** restore `omarchy-menu.jsonc` and `bindings.lua` from their
+backups on each host and run `hyprctl reload`; close the PR, or revert its
+merge commit.
+
 ## Tests
 
 | Command | Expected |

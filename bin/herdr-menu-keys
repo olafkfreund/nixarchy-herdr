@@ -1,0 +1,59 @@
+#!/bin/bash
+# herdr-menu-keys — the plugin's keys, as a searchable sheet.
+#
+# The menu's keys only exist while the menu has the keyboard, so they are not
+# Hyprland bindings and Omarchy's Keybindings menu cannot list them. This
+# prints them the way Omarchy's own Learn sheets do (`KEY → description`) and
+# shows them in the same picker. It binds nothing and changes nothing.
+#
+#   herdr-menu-keys           show the sheet
+#   herdr-menu-keys --print   print it
+
+set -euo pipefail
+
+keys() {
+  cat <<'KEYS'
+── Open ──────────────────────────
+SUPER SHIFT + H            → Open or close the Herdr sessions menu
+Click the bar icon         → Open the dropdown panel (this machine only)
+Middle-click the bar icon  → Refresh the bar counts
+── Move ──────────────────────────
+DOWN  /  j                 → Next row
+UP  /  k                   → Previous row
+RIGHT  /  l                → Move across a row to its buttons
+LEFT  /  h                 → Move back towards the row
+TAB  /  SHIFT + TAB        → Cycle through the row's buttons
+── Act ───────────────────────────
+RETURN  /  SPACE           → Jump to the agent, open the session, or press the button
+o                          → Open the session under the cursor
+SHIFT + K                  → Kill that session's server (asks first)
+x                          → Delete a stopped session
+r                          → Refresh
+ESCAPE                     → Close
+── Menu only ─────────────────────
+n                          → New session on the host under the cursor
+a                          → Prompt the agent under the cursor
+── Bar panel only ────────────────
+p                          → Pin the panel to the desktop, or unpin it
+── Input line (after n or a) ─────
+RETURN                     → Create the session, or send the prompt
+ESCAPE                     → Close the line and stop a running prompt
+── Confirm dialog ────────────────
+LEFT  /  RIGHT             → Choose Cancel or Kill / Send
+RETURN                     → Confirm the highlighted choice (opens on Cancel)
+ESCAPE                     → Cancel
+KEYS
+}
+
+if [[ ${1-} == --print || ${1-} == -p ]]; then
+  keys
+  exit 0
+fi
+
+# The same size rule as Omarchy's own Herdr sheet: 40% of the focused screen.
+monitor_height=$(hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.focused == true) | .height' 2>/dev/null || true)
+if [[ ! $monitor_height =~ ^[0-9]+$ ]] || ((monitor_height <= 0)); then
+  monitor_height=900
+fi
+
+keys | omarchy-menu-select 'Herdr plugin keys' -- --width 800 --height "$((monitor_height * 40 / 100))" >/dev/null || true
