@@ -99,6 +99,22 @@ opened.
 - `omarchy plugin add` takes only a git URL. The dev install is a plain git
   clone in the plugin directory; other installed plugins already carry
   `.git`.
+- Found in step 0: `herdr --remote H --session S` creates and starts a
+  missing session on H, so the deviation rule was not needed. Any herdr the
+  script launches must run without `HERDR_*` variables (`env -u` each one).
+  Otherwise, when the script runs from inside a herdr pane (as in testing),
+  herdr refuses with "nested herdr is disabled".
+- Found in step 2: `omarchy-shell` gives IPC calls 2s
+  (`OMARCHY_SHELL_IPC_TIMEOUT`), but `rescanPlugins` takes about 15s with 20
+  plugins installed. Run shell commands with `OMARCHY_SHELL_IPC_TIMEOUT=20s`.
+  A timed-out call may still have been applied, so re-check with
+  `omarchy plugin list --json`. A fresh `git clone` into the plugin directory
+  triggers several hot reloads in a row.
+- qmllint baseline for upstream `Panel.qml` + `Card.qml`: 0 errors and 721
+  warnings, mostly unqualified `panel`/`root` access from nested components.
+  The count grows with every such access, so "no errors" means 0 errors and
+  no warning type other than `[unqualified]`, checked with
+  `grep -o '\[[a-z-]*\]$' | sort | uniq -c`.
 
 Throughout: `R=/mnt/data/Source-home/GitHub/nixarchy-herdr`,
 `P=~/.config/omarchy/plugins/nixarchy.herdr`, and
