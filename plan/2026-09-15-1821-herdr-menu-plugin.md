@@ -112,9 +112,18 @@ opened.
   triggers several hot reloads in a row.
 - qmllint baseline for upstream `Panel.qml` + `Card.qml`: 0 errors and 721
   warnings, mostly unqualified `panel`/`root` access from nested components.
-  The count grows with every such access, so "no errors" means 0 errors and
-  no warning type other than `[unqualified]`, checked with
-  `grep -o '\[[a-z-]*\]$' | sort | uniq -c`.
+  Per type at `fa545a4`: 98 `[import]`, 1 `[inheritance-cycle]`,
+  32 `[missing-property]`, 512 `[unqualified]`, 78 `[unresolved-type]`. Most
+  come from `qs.*` shell modules qmllint cannot fully resolve. Counts are
+  taken with
+  `qmllint … 2>&1 | grep -E '^(Error|Warning)' | grep -o '\[[a-z-]*\]$' | sort | uniq -c`.
+  "No errors" means:
+  - 0 `Error` lines.
+  - For each type, compare against the previous step. `[unqualified]` may
+    grow.
+  - Any other type that grows is read line by line. Growth from a new file's
+    `qs.*` imports or types is accepted and named in the commit message;
+    anything else is fixed.
 
 Throughout: `R=/mnt/data/Source-home/GitHub/nixarchy-herdr`,
 `P=~/.config/omarchy/plugins/nixarchy.herdr`, and
