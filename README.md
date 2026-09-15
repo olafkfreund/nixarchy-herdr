@@ -33,16 +33,7 @@ host in `~/.config/omarchy/herdr.json`, with every remote row named
 `host · session`. The title line says how each host answered: `●` something
 running, `○` nothing running, `–` no answer.
 
-| Key | Does |
-| --- | --- |
-| `↑` `↓`, `j` `k` | move between sessions and agents |
-| `Enter`, `o` | land on that agent's pane, or open that session |
-| `n` | new session on the host under the cursor: type `name` or `name /absolute/dir` |
-| `a` | prompt the agent under the cursor; `Enter` sends, `Esc` stops waiting |
-| `K` | kill that session's server (asks first, Cancel selected) |
-| `x` | delete a stopped session |
-| `r` | refresh |
-| `Esc` | close the input or dialog, otherwise the menu |
+Every key is listed under [Keybindings](#keybindings).
 
 **Landing on an agent** focuses its pane inside the server and then the window
 already showing that session. A new window opens only when none shows it: a
@@ -57,6 +48,84 @@ agent's footer or the conversation before it.
 
 **Other hosts** are polled only while the menu is open, over ssh, and a host
 that does not answer never delays the rest. Nothing is installed on them.
+
+## Keybindings
+
+### Opening
+
+| Key | Does |
+| --- | --- |
+| `SUPER + SHIFT + H` | Open the menu on the screen you are using; press again to close |
+| Click the bar icon | Open the dropdown panel (this machine's sessions only) |
+| Middle-click the bar icon | Refresh the bar counts |
+
+### In the menu and the dropdown panel
+
+| Key | Does |
+| --- | --- |
+| `↓` / `j` | Next row |
+| `↑` / `k` | Previous row |
+| `→` / `l` | Move across a row to its buttons (open, then kill or delete) |
+| `←` / `h` | Move back towards the row |
+| `Tab` / `Shift+Tab` | Cycle through the row's buttons |
+| `Enter` / `Space` | Jump to the agent, open the session, or press the button you are on |
+| `o` | Open the session under the cursor |
+| `K` (Shift+k) | Kill that session's server; asks first, with Cancel selected |
+| `x` | Delete a stopped session |
+| `r` | Refresh |
+| `Esc` | Close |
+
+Menu only:
+
+| Key | Does |
+| --- | --- |
+| `n` | New session on the host under the cursor: `name` or `name /absolute/dir` |
+| `a` | Prompt the agent under the cursor |
+
+Dropdown panel only:
+
+| Key | Does |
+| --- | --- |
+| `p` | Pin the panel to the desktop, or unpin it |
+
+### In the input line (after `n` or `a`)
+
+| Key | Does |
+| --- | --- |
+| `Enter` | Create the session, or send the prompt; the answer shows below |
+| `Esc` | Close the line, and stop waiting on a prompt that is still running |
+
+### In a confirm dialog (kill, or prompting a busy agent)
+
+| Key | Does |
+| --- | --- |
+| `←` / `→` | Choose between Cancel and Kill or Send |
+| `Enter` | Confirm the highlighted choice; it opens on Cancel |
+| `Esc` | Cancel |
+
+Kill is `K`, not `k`: Omarchy's shared key handler takes lowercase `k` as
+"up" before the menu sees it.
+
+### In Omarchy's menus
+
+`SUPER + SHIFT + H` appears in Omarchy's **Keybindings** menu under the
+description given in `bindings.lua`. The keys above only exist while the menu
+has the keyboard, so they are not Hyprland bindings, and binding them would
+take those letters from every window. Instead, `bin/herdr-menu-keys` shows
+them as a searchable sheet, the way Omarchy's **Learn → Herdr** and
+**Learn → Tmux** sheets work. Add it to the Learn menu in
+`~/.config/omarchy/extensions/omarchy-menu.jsonc`, next to any rows already
+there:
+
+```jsonc
+"learn.herdr-plugin-keybindings": {
+  "icon": "",
+  "label": "Herdr plugin",
+  "action": "~/.config/omarchy/plugins/nixarchy.herdr/bin/herdr-menu-keys"
+}
+```
+
+`bin/herdr-menu-keys --print` prints the same list in a terminal.
 
 ## What it shows
 
@@ -202,7 +271,7 @@ installed, disable it: both put an icon in the bar.
 Add the keybind to `~/.config/hypr/bindings.lua` and reload Hyprland:
 
 ```lua
-o.bind("SUPER + SHIFT + H", "Herdr", "omarchy-shell shell toggle nixarchy.herdr '{}'")
+o.bind("SUPER + SHIFT + H", "Herdr sessions menu", "omarchy-shell shell toggle nixarchy.herdr '{}'")
 ```
 
 ```bash
