@@ -515,6 +515,38 @@ watch the layer for 6s) kept it open throughout.
 → **Verify** every item passes, with results recorded in the PR
 description.
 
+
+Done 2026-09-15. The README now opens with the menu (keybind, keys, hosts,
+new sessions, prompting), keeps upstream's bar-widget, states, pinning and
+screenshot sections, corrects `k`→`K` and the dead `x`, and covers install,
+keybind, `herdr.json`, local and remote requirements, removal, privacy and
+both licences.
+
+markdownlint: fixed the one structural issue (a paragraph that split the
+shortcut list). Left as is: upstream's long single-line paragraphs (MD013),
+one wide table row, and the centred logo's inline HTML (MD033/MD041). This
+repository has no lint gate.
+
+Verification run, all PASS:
+
+- `omarchy plugin validate` exit 0; qmllint 0 errors on all four QML files;
+  shellcheck at the upstream baseline (2× SC2178, 1× SC2174).
+- Local list tags `host: ""`; razer list tags `host: "razer"` (518ms);
+  `bad;name`, `-oProxyCommand=x` and `a b` are refused as host names;
+  `nosuchhost` returns `ok:false` at 8s.
+- `new` refuses `-x`, `a b`, `Devlopment-Local`, `default` and a relative
+  directory, with the session list unchanged.
+- `prompt` refuses whitespace and a malformed pane id; two injection payloads
+  create no marker on p620 or razer.
+- No prompt or reply text under `~/.cache` or `~/.local/state`; no plugin
+  cache directory.
+- The plugin is enabled with kinds `[menu, bar-widget]`; the menu opens on the
+  focused output; no host polls 11s after closing; `SUPER+SHIFT+H` is bound.
+- On screen, earlier in this session (steps 8–10): open/close/toggle, `K`
+  dialog with Cancel, `Enter` focus without a new window, razer rows and host
+  state, `n` on razer, prompt reply, busy-agent dialog, `Esc` mid-prompt
+  leaving no process.
+
 ### 12. PR.
 - `gh pr create --repo olafkfreund/nixarchy-herdr --base master`
 - The body links `intent/`, `spec/`, `plan/` and

@@ -2,19 +2,61 @@
 
 # Herdr for Nixarchy
 
-A herdr plugin for the Omarchy shell on Nixarchy, based on
-[jankeesvw/omarchy-herdr](https://github.com/jankeesvw/omarchy-herdr) (MIT).
-The herdr logo is from [herdrdev/herdr](https://github.com/herdrdev/herdr)
+Your [herdr](https://herdr.dev) sessions and the coding agents inside them, on
+a keybind, in the Omarchy shell. Across machines, not just this one.
+
+- **`SUPER + SHIFT + H`** opens a menu of every session and agent, here and on
+  the hosts you list, and lands you on an agent's pane without starting a new
+  session.
+- **`n`** creates a session, locally or on another host.
+- **`a`** sends a short prompt to an agent and shows its answer, without
+  leaving what you are doing.
+- **The bar icon** keeps the count and the attention colours of the original
+  widget.
+
+Built on [jankeesvw/omarchy-herdr](https://github.com/jankeesvw/omarchy-herdr)
+(MIT), which is where the bar widget, its states and its pinned panel come
+from. The herdr logo is from [herdrdev/herdr](https://github.com/herdrdev/herdr)
 (Apache-2.0) and is used to identify herdr.
-It starts as that bar widget: how many herdr servers are running, what is
-inside each one, and one click to open it.
 
 Herdr runs one server per named session. They are easy to start and they never
 stop by themselves, because closing a window detaches rather than ends the
-session. So they pile up unseen. This widget puts the count in the bar and the
-list one click away.
+session. So they pile up unseen, on more than one machine.
 
 ![The Herdr panel open on a desktop, listing four sessions with the agents inside each](assets/screenshot.png)
+
+## The menu
+
+`SUPER + SHIFT + H` opens it on the screen you are working on, and the same
+chord or `Esc` closes it. It lists this machine's sessions first, then each
+host in `~/.config/omarchy/herdr.json`, with every remote row named
+`host · session`. The title line says how each host answered: `●` something
+running, `○` nothing running, `–` no answer.
+
+| Key | Does |
+| --- | --- |
+| `↑` `↓`, `j` `k` | move between sessions and agents |
+| `Enter`, `o` | land on that agent's pane, or open that session |
+| `n` | new session on the host under the cursor: type `name` or `name /absolute/dir` |
+| `a` | prompt the agent under the cursor; `Enter` sends, `Esc` stops waiting |
+| `K` | kill that session's server (asks first, Cancel selected) |
+| `x` | delete a stopped session |
+| `r` | refresh |
+| `Esc` | close the input or dialog, otherwise the menu |
+
+**Landing on an agent** focuses its pane inside the server and then the window
+already showing that session. A new window opens only when none shows it: a
+local `herdr --session`, or `herdr --remote host --session` for another
+machine.
+
+**Prompting** goes to the agent that was under the cursor when you pressed
+`a`. An agent that is working, waiting on a question, or unreadable asks
+before the text is sent, because it would arrive in the middle of what the
+agent is doing. The answer appears under the line: only the reply, without the
+agent's footer or the conversation before it.
+
+**Other hosts** are polled only while the menu is open, over ssh, and a host
+that does not answer never delays the rest. Nothing is installed on them.
 
 ## What it shows
 
@@ -71,7 +113,7 @@ one colour.
   whatever the session was last showing: its pane is focused inside the server
   first, then the window comes up. That also marks a finished agent as seen, so
   clicking the line that says **done** is what clears it.
-- **The skull** (or `k`) ends that server, and is the only way it is ended from
+- **The skull** (or `K`) ends that server, and is the only way it is ended from
   here. It asks first, and the dialog opens on **Cancel** rather than on the
   confirming side: a dialog that destroys something on a reflexive Enter is
   worse than no dialog, because it trains the reflex. It is the only action in
@@ -87,7 +129,13 @@ one colour.
   never both running and stopped. The shared session is herdr's own and is
   never deleted from here.
 - **`r`** refreshes, and so does a middle click on the bar button.
-- **The pin** (or `p`) takes the panel out of the bar and leaves it on the desktop. See below.
+- **`a`** and **`n`** do nothing in the bar panel; they belong to the menu.
+- **The pin** (or `p`) takes the panel out of the bar and leaves it on the
+  desktop. See below.
+
+`K` rather than upstream's `k`, and `x` now works: Omarchy's shared key handler
+takes `k` as "up" and turns `x` into its own delete signal before a panel sees
+either, so the original shortcuts never fired.
 
 A row marked **stopped** is a session whose server is not running. The session
 itself still exists on disk, under `~/.config/herdr/sessions/<name>/`, which is
@@ -143,17 +191,41 @@ real server.
 ## Installing it
 
 ```bash
-omarchy plugin add https://github.com/olafkfreund/nixarchy-herdr
+git clone https://github.com/olafkfreund/nixarchy-herdr ~/.config/omarchy/plugins/nixarchy.herdr
 omarchy plugin enable nixarchy.herdr
 omarchy bar move nixarchy.herdr --section right
 ```
 
-Needs `herdr`, `jq` and `hyprctl` on `$PATH`. The last one is what pairs a
-session with the window showing it; without Hyprland the list still works, but
-every session looks like it has no window and a click opens a new one. `ss`
-(from iproute2) is what the skull button uses to find the process behind a
-session's socket, and a window is opened in `foot`, falling back to
-`xdg-terminal-exec`.
+`omarchy plugin add <git-url>` works as well. If `jankeesvw.herdr` is
+installed, disable it: both put an icon in the bar.
+
+Add the keybind to `~/.config/hypr/bindings.lua` and reload Hyprland:
+
+```lua
+o.bind("SUPER + SHIFT + H", "Herdr", "omarchy-shell shell toggle nixarchy.herdr '{}'")
+```
+
+```bash
+hyprctl reload
+```
+
+List other machines, by the names your `~/.ssh/config` knows them as:
+
+```json
+{ "hosts": ["razer"] }
+```
+
+in `~/.config/omarchy/herdr.json`. The file is watched, so an edit applies
+while the menu is open. No file means this machine only.
+
+**This machine** needs `herdr`, `jq`, `hyprctl`, `foot` (or
+`xdg-terminal-exec`) and `ss` from iproute2, which the kill button uses to find
+a session's server.
+
+**Each remote host** needs `bash`, `jq` and `herdr` on the ssh user's `PATH`,
+and a key that logs in without a prompt: every call uses `BatchMode=yes`. The
+data script is piped to the host on each call, so nothing is installed there,
+and one shared connection keeps polling to a handshake a minute.
 
 ## Removing it
 
@@ -162,9 +234,12 @@ omarchy plugin disable nixarchy.herdr
 omarchy plugin remove nixarchy.herdr
 ```
 
-The widget keeps no cache of your work: every value on screen is read from
-herdr at the moment it is drawn, and nothing about your projects, agents or
-titles is ever written to disk.
+Then delete the `SUPER + SHIFT + H` line from `~/.config/hypr/bindings.lua`,
+run `hyprctl reload`, and remove `~/.config/omarchy/herdr.json` if you made one.
+
+Nothing about your work is kept: every value on screen is read from herdr at
+the moment it is drawn, and no session name, agent title, prompt or reply is
+written to disk, locally or on another host.
 
 The one file it can create is the demo flag, and only if you turned demo mode
 on. It is empty and holds nothing about you, but it outlives the plugin:
@@ -174,8 +249,10 @@ rm -rf ~/.cache/omarchy-herdr
 ```
 
 Your herdr sessions are untouched by removing the plugin - they live in
-`~/.config/herdr/` and are herdr's, not this widget's.
+`~/.config/herdr/` and are herdr's, not this plugin's.
 
 ## License
 
-MIT
+MIT. Copyright (c) 2026 Jankees van Woezik and (c) 2026 olafkfreund; see
+[LICENSE](LICENSE). The herdr logo in `assets/herdr-logo.svg` and
+`assets/herdr-mark.svg` is from herdrdev/herdr under Apache-2.0.
