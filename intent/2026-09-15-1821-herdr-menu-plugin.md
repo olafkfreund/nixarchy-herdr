@@ -44,7 +44,9 @@ takes too many steps.
   attention ordering, kill with confirmation, delete of stopped sessions, and
   the pinned panel.
 - The plugin is built in its own repository, `olafkfreund/nixarchy-herdr`, so it
-  can grow in small steps, with hot reload during development.
+  can grow in small steps, with hot reload during development. Its plugin ID
+  is `nixarchy.herdr`, installed at `~/.config/omarchy/plugins/nixarchy.herdr/`
+  (decided 2026-09-15).
 
 ## Affected users and systems
 
