@@ -445,19 +445,63 @@ see as a change. It now builds new objects.
 - `n` on a razer row, typing `nhtest-menu /tmp`, creates the session on razer
   (clean up after).
 
-### 10. `Menu.qml`: prompt line.
-- `a` opens a prompt line for the selected agent. `Enter` sends through
-  `prompt` with the text written to the process's stdin; the reply
-  replaces the line; `Esc` cancels and kills a running prompt.
-- `working`, `blocked` or `unknown` agents get the confirmation dialog
-  first (reuse `Card.qml`'s kill dialog pattern, focus on Cancel).
+### 10. `Menu.qml`, `HerdrModel.qml`, `Card.qml`: prompt line.
+
+- `a` on an agent opens the menu's input line in prompt mode, targeted at
+  that agent. The target is captured on the key press, so a refresh or a
+  moving mouse cannot redirect it.
+- `Enter` sends through `herdr-sessions prompt`. The text is written to the
+  process's stdin in `onStarted`, then stdin is closed
+  (`stdinEnabled = false`, re-enabled before each start).
+- `Esc`, or closing the menu, abandons a running prompt.
+- An agent that is `working`, `blocked` or `unknown` as of the latest poll
+  gets `ConfirmDialog` first, opening on Cancel as the kill dialog does. The
+  new-session line shares the same input row.
+
+Deviation, made in the step 10 commit: the reply appears **below** the
+input line instead of replacing it. A hidden `TextInput` cannot hold keyboard
+focus, and a line that stays open lets a follow-up be sent at once.
+
+Reply trimming, from what agents actually print:
+
+- Drop everything from the last bare prompt marker (`❯`) down. That is the
+  agent's own footer: status line, hints, warnings.
+- Keep only what follows the echoed `❯ <sent text>` line, so earlier
+  conversation does not show.
+- Rejoin the terminal's wrapped lines into paragraphs, breaking only at
+  lines that start with a marker (`●`, `✻`, `⎿`, `•`, `-`, `*`, a number).
+- Show the last six paragraphs.
+
+Changed on request during step 10: the menu card is `Style.space(760)` wide
+(capped at 60% of the screen) with `textScale: 1.6`, and the card title
+(`PanelSectionHeader.fontSize`) now scales too, which the step 8 change had
+missed.
+
+Found in step 10: `Esc` killed only the top-level script. The `herdr agent
+prompt` it was waiting on sat inside a `$(...)` subshell, and survived with its
+`timeout` for up to 300s. `cmd_prompt` now runs `timeout … agent prompt` as a
+direct background child and traps `TERM`/`INT`/`HUP` to signal it (`timeout`
+passes the signal on to herdr). Status then comes from `agent get`. The remote
+command also runs under `timeout 300` on the host, so a dropped connection
+cannot strand it there. Verified locally, both by `kill -TERM` and through the
+menu's `Esc` (script, `timeout` and herdr all gone within 3s). The remote
+abandon path is bounded by that remote timeout but was not exercised against
+a live razer agent.
+
+Correction to the record: during testing I twice reported the menu closing
+on its own when a prompt finished. It had not. My screenshot crops missed
+it, and a direct test (open the menu, prompt the agent from the command line,
+watch the layer for 6s) kept it open throughout.
 
 → **Verify:**
-- A prompt to an idle test agent shows the reply in the menu.
-- A prompt to a `working` agent shows the dialog, and Cancel sends
-  nothing (the agent's recent output is unchanged).
-- Closing the menu mid-prompt leaves no `herdr … agent prompt` process in
-  `pgrep -af`.
+
+- A prompt to an idle agent shows its answer below the line, and only the
+  answer (checked: `● menu-pong`, and a two-sentence answer as one
+  paragraph).
+- A prompt to a `working` agent opens the dialog with Cancel selected.
+  Cancel sends nothing, and no `herdr-sessions` process starts.
+- Abandoning a long prompt with `Esc` leaves no `herdr-sessions` and no
+  `agent prompt` process within a few seconds.
 
 ### 11. `README.md`: rewrite.
 - Cover install (git clone plus enable), the `herdr.json` hosts file, the

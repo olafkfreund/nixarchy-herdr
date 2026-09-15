@@ -134,12 +134,18 @@ valid_host() {
 # a shell that has no terminal, and the control socket keeps a 3s poll to one
 # handshake a minute. A second argument raises the 8s ceiling for the one
 # call that waits on an agent.
+ssh_options() {
+  SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=4)
+  if [[ -n ${XDG_RUNTIME_DIR-} && -d ${XDG_RUNTIME_DIR-} ]]; then
+    SSH_OPTS+=(-o ControlMaster=auto -o ControlPersist=60
+               -o "ControlPath=$XDG_RUNTIME_DIR/nixarchy-herdr-%C")
+  fi
+}
+
 ssh_run() {
-  local -a opts=(-o BatchMode=yes -o ConnectTimeout=4)
-  [[ -n ${XDG_RUNTIME_DIR-} && -d ${XDG_RUNTIME_DIR-} ]] &&
-    opts+=(-o ControlMaster=auto -o ControlPersist=60
-           -o "ControlPath=$XDG_RUNTIME_DIR/nixarchy-herdr-%C")
-  timeout "${2:-8}" ssh "${opts[@]}" -- "$HOST" "$1"
+  local -a SSH_OPTS
+  ssh_options
+  timeout "${2:-8}" ssh "${SSH_OPTS[@]}" -- "$HOST" "$1"
 }
 
 # A herdr started from inside a herdr pane refuses to run ("nested herdr is
@@ -709,23 +715,43 @@ cmd_prompt() {
   [[ $name == default ]] || base+=(--session "$name")
   local -a wait_for=(--wait --until 'idle' --until 'done' --until 'blocked')
 
-  local answer screen
+  # The wait runs as a direct child rather than inside a command
+  # substitution, so a TERM from the menu (Esc, or the menu closing) reaches
+  # it: `timeout` passes the signal on to herdr. In a `$(...)` it would sit in
+  # a subshell the trap cannot see, and keep waiting on the agent for minutes.
+  local child
   if [[ -n $HOST ]]; then
+    local -a SSH_OPTS
+    ssh_options
+    # The remote side gets its own ceiling as well: a dropped connection does
+    # not stop a command waiting there on its own.
     # shellcheck disable=SC2016 # expanded by the remote bash, not here
-    answer=$(printf '%s' "$text" | ssh_run "$(printf '%q ' bash -c 't=$(cat); "$@" "$t" '"${wait_for[*]}" \
-      _ "${base[@]}" agent prompt "$pane")" 305 2>/dev/null) || true
+    timeout 305 ssh "${SSH_OPTS[@]}" -- "$HOST" \
+      "$(printf '%q ' bash -c 't=$(cat); timeout 300 "$@" "$t" '"${wait_for[*]}" \
+        _ "${base[@]}" agent prompt "$pane")" <<<"$text" >/dev/null 2>&1 &
+  else
+    timeout 300 "${base[@]}" agent prompt "$pane" "$text" "${wait_for[@]}" </dev/null >/dev/null 2>&1 &
+  fi
+  child=$!
+  trap 'kill -TERM "$child" 2>/dev/null; exit 143' TERM INT HUP
+  wait "$child" || true
+  trap - TERM INT HUP
+
+  local agent screen
+  if [[ -n $HOST ]]; then
+    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" </dev/null 2>/dev/null) || true
     screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" \
       </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   else
-    answer=$(timeout 300 "${base[@]}" agent prompt "$pane" "$text" "${wait_for[@]}" </dev/null 2>/dev/null) || true
+    agent=$("${base[@]}" agent get "$pane" </dev/null 2>/dev/null) || true
     screen=$("${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
       head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   fi
   over_byte_cap "$screen" "$SNAPSHOT_BYTE_CAP" && screen=${screen:0:SNAPSHOT_BYTE_CAP}
 
   local status
-  status=$(printf '%s' "$answer" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || true
-  [[ -n $answer ]] || [[ -n $screen ]] || die "could not reach that agent"
+  status=$(printf '%s' "$agent" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || true
+  [[ -n $status ]] || [[ -n $screen ]] || die "could not reach that agent"
   jq -cn --arg status "${status:-timeout}" --arg output "$screen" \
     '{ok: true, status: $status, output: $output}'
 }

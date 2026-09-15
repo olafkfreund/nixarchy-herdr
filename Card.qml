@@ -107,6 +107,7 @@ PanelKeyCatcher {
     else if (t === "p" && panel.pinnable !== false) panel.togglePin()
     else if (t === "r") panel.refresh()
     else if (t === "n") panel.requestNew()
+    else if (t === "a") panel.requestPrompt()
   }
 
   Column {
@@ -172,6 +173,7 @@ PanelKeyCatcher {
         elide: Text.ElideRight
         foreground: panel.foreground
         fontFamily: panel.fontFamily
+        fontSize: Math.round(Style.font.caption * card.panel.textScale)
       }
 
       // Pinning is this card coming loose from the bar: the same card, in the

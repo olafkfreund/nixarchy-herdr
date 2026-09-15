@@ -518,6 +518,17 @@ Item {
   signal newSessionRequested()
   function requestNew() { newSessionRequested() }
 
+  // The same arrangement for `a`: only when the cursor is on an agent, since a
+  // prompt goes to one pane and a bare session has none to receive it.
+  signal promptRequested()
+  function requestPrompt() { if (agentAt(cursor)) promptRequested() }
+
+  // An agent in the middle of something, or one herdr cannot read. Typing into
+  // it interleaves with its own output, so the menu asks before sending.
+  function agentBusy(status) {
+    return status === "working" || status === "blocked" || status === "unknown"
+  }
+
   // Create on the host the cursor is on, so `n` while reading razer's
   // sessions makes one on razer.
   function hostAtCursor() {
