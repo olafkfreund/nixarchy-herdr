@@ -2,15 +2,17 @@
   "schemaVersion": 1,
   "id": "nixarchy.herdr",
   "name": "Herdr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "olafkfreund",
   "description": "Running herdr servers in the bar, with every agent inside them, and a click that lands you on the one you picked",
   "homepage": "https://github.com/olafkfreund/nixarchy-herdr",
   "license": "MIT",
   "kinds": [
+    "menu",
     "bar-widget"
   ],
   "entryPoints": {
+    "menu": "Menu.qml",
     "barWidget": "Panel.qml"
   },
   "barWidget": {
@@ -19,5 +21,6 @@
     "category": "Apps",
     "allowMultiple": false,
     "defaultSection": "right"
-  }
+  },
+  "keepLoaded": true
 }

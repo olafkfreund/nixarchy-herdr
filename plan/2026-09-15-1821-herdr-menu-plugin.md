@@ -341,20 +341,44 @@ Found in step 7:
   leftover directory the remote attach left behind.
 
 ### 8. `Menu.qml` (new), `manifest.json`, `~/.config/hypr/bindings.lua`: the menu.
-- Manifest kinds become `["menu","bar-widget"]`, with `keepLoaded: true`
-  and `entryPoints.menu`.
-- `Menu.qml` hosts `Card` over its own `HerdrModel` (local host only in
-  this step), with the menu keys `↑↓ jk Enter o K x r Esc`.
-- Add the keybind line to p620's `bindings.lua`, then run
-  `hyprctl reload`.
+
+- Manifest: `kinds: ["menu","bar-widget"]`, `keepLoaded: true`,
+  `entryPoints.menu: Menu.qml`, version 0.2.0.
+- `Menu.qml`: root `Item` with `open(payloadJson)`, `close()`, `toggle()`
+  and `opened`, drawing a `PanelWindow` on `WlrLayer.Overlay` with
+  `WlrKeyboardFocus.Exclusive`, a scrim, click-away close, and a centred
+  `BorderSurface` holding `Card` over its own `HerdrModel`. Local host only
+  in this step.
+- `Card.qml`: kill moves to the shifted `K` and delete to the
+  `deleteRequested` signal; a surface may declare `pinnable: false`, which
+  hides the pin button and the `p` key. `HerdrModel` forwards `pinnable`.
+- Keybind appended to `~/.config/hypr/bindings.lua`, then `hyprctl reload`.
+
+Found in step 8: `qs.Ui/PanelKeyCatcher` maps `k` to vim-up and turns `x`
+into its own `deleteRequested` signal before a component's `textKey` handler
+runs, so upstream's `k` (kill) and `x` (delete) never fired in the bar panel
+either. That is why `k` did nothing during the step 4 check. The `K` and
+`deleteRequested` handling repairs both surfaces.
+
+Also: `Card.qml`'s binding-loop warning (a `Text` with
+`height: visible ? implicitHeight : 0`) is upstream's, at its line 352; our
+edits only shift the line number.
 
 → **Verify:**
-- `omarchy plugin validate $R` and `$LINT`.
-- `SUPER+SHIFT+H` opens the menu, and `Esc` closes it.
-- Pressing the keybind twice toggles the menu.
-- Focusing an agent in an attached session adds no window to
-  `hyprctl clients -j | jq length`.
-- The bar badge still works alongside the menu.
+
+- `omarchy plugin validate` exits 0; qmllint 0 errors, growth only in the
+  usual unresolved `qs.*`/QtQuick types.
+- `SUPER + SHIFT + H` opens the menu centred over a scrim, listing sessions
+  and agents, with the cursor on the most urgent agent and no pin button.
+- `Esc` closes it; pressing the chord twice toggles it.
+- `K` opens the kill dialog with Cancel focused; `Esc` cancels, the servers
+  keep running and the menu stays open.
+- `Enter` focuses the agent under the cursor: `hyprctl clients` count
+  unchanged, the agent reports `focused`, and the menu closes.
+- The bar badge still draws and counts alongside the menu.
+
+Note for on-screen testing: send one key per `input` call. Two chords in one
+batch raced the menu's focus and the second key was lost.
 
 ### 9. `Menu.qml`, `HerdrModel.qml`: hosts in the menu.
 - Read `~/.config/omarchy/herdr.json`, poll one `Process` per host while

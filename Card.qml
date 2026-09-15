@@ -91,14 +91,20 @@ PanelKeyCatcher {
   // Only activateRequested, never returnRequested as well: Enter fires
   // both, and a handler on each runs the action twice.
   onActivateRequested: panel.activateCursor()
+  // PanelKeyCatcher takes `x` for itself and turns it into this signal, and
+  // takes `k` as vim's "up" before any letter handler sees it - so the kill
+  // key is the shifted `K`, which arrives as an ordinary letter.
+  onDeleteRequested: {
+    var target = panel.sessionAt(panel.cursor)
+    if (target) panel.removeSession(target)
+  }
   onTextKey: function(t) {
     // The letter keys stay about the server, wherever inside it the
     // cursor happens to be: you kill a server, never an agent.
     var session = panel.sessionAt(panel.cursor)
     if (t === "o" && session) panel.openSession(session)
-    else if (t === "k" && session) panel.askKill(session)
-    else if (t === "x" && session) panel.removeSession(session)
-    else if (t === "p") panel.togglePin()
+    else if (t === "K" && session) panel.askKill(session)
+    else if (t === "p" && panel.pinnable !== false) panel.togglePin()
     else if (t === "r") panel.refresh()
   }
 
@@ -175,6 +181,10 @@ PanelKeyCatcher {
         id: pinButton
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
+        // A summoned menu is the opposite of a panel left lying about, so the
+        // surface says whether pinning means anything here.
+        visible: card.panel.pinnable !== false
+        width: visible ? implicitWidth : 0
         iconText: panel.iconPin
         tooltipText: panel.pinned
           ? "Put it back in the bar (p)"

@@ -15,6 +15,7 @@ Item {
 
   readonly property bool opened: host ? host.opened === true : false
   readonly property bool pinned: host ? host.pinned === true : false
+  readonly property bool pinnable: host ? host.pinnable !== false : true
   readonly property var activeCard: host ? host.activeCard : null
   readonly property color foreground: host ? host.foreground : Color.foreground
   readonly property color accent: host ? host.accent : Color.accent
