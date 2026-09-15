@@ -91,15 +91,23 @@ PanelKeyCatcher {
   // Only activateRequested, never returnRequested as well: Enter fires
   // both, and a handler on each runs the action twice.
   onActivateRequested: panel.activateCursor()
+  // PanelKeyCatcher takes `x` for itself and turns it into this signal, and
+  // takes `k` as vim's "up" before any letter handler sees it - so the kill
+  // key is the shifted `K`, which arrives as an ordinary letter.
+  onDeleteRequested: {
+    var target = panel.sessionAt(panel.cursor)
+    if (target) panel.removeSession(target)
+  }
   onTextKey: function(t) {
     // The letter keys stay about the server, wherever inside it the
     // cursor happens to be: you kill a server, never an agent.
     var session = panel.sessionAt(panel.cursor)
     if (t === "o" && session) panel.openSession(session)
-    else if (t === "k" && session) panel.askKill(session)
-    else if (t === "x" && session) panel.removeSession(session)
-    else if (t === "p") panel.togglePin()
+    else if (t === "K" && session) panel.askKill(session)
+    else if (t === "p" && panel.pinnable !== false) panel.togglePin()
     else if (t === "r") panel.refresh()
+    else if (t === "n") panel.requestNew()
+    else if (t === "a") panel.requestPrompt()
   }
 
   Column {
@@ -165,6 +173,7 @@ PanelKeyCatcher {
         elide: Text.ElideRight
         foreground: panel.foreground
         fontFamily: panel.fontFamily
+        fontSize: Math.round(Style.font.caption * card.panel.textScale)
       }
 
       // Pinning is this card coming loose from the bar: the same card, in the
@@ -175,6 +184,10 @@ PanelKeyCatcher {
         id: pinButton
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
+        // A summoned menu is the opposite of a panel left lying about, so the
+        // surface says whether pinning means anything here.
+        visible: card.panel.pinnable !== false
+        width: visible ? implicitWidth : 0
         iconText: panel.iconPin
         tooltipText: panel.pinned
           ? "Put it back in the bar (p)"
@@ -182,7 +195,7 @@ PanelKeyCatcher {
         foreground: panel.pinned ? panel.accent : Qt.darker(panel.foreground, 1.5)
         hoverColor: panel.accent
         fontFamily: panel.fontFamily
-        fontSize: Style.font.iconSmall
+        fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
         onClicked: panel.togglePin()
       }
     }
@@ -203,7 +216,7 @@ PanelKeyCatcher {
         textFormat: Text.PlainText
         elide: Text.ElideRight
         font.family: panel.fontFamily
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
         color: panel.urgent
       }
     }
@@ -278,7 +291,7 @@ PanelKeyCatcher {
               text: panel.iconDot
               textFormat: Text.PlainText
               font.family: panel.fontFamily
-              font.pixelSize: Style.space(7)
+              font.pixelSize: Math.round(Style.space(7) * card.panel.textScale)
               color: panel.statusColor(row.modelData)
             }
           }
@@ -302,7 +315,7 @@ PanelKeyCatcher {
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
                 font.family: panel.fontFamily
-                font.pixelSize: Style.font.body
+                font.pixelSize: Math.round(Style.font.body * card.panel.textScale)
                 // The window a session is showing is the one you would
                 // switch to; a session without one still has to be opened.
                 font.bold: row.modelData.windowAddress !== ""
@@ -323,7 +336,7 @@ PanelKeyCatcher {
                   text: panel.noteLabel(row.modelData)
                   textFormat: Text.PlainText
                   font.family: panel.fontFamily
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
                   color: panel.noteColor(row.modelData)
                 }
 
@@ -340,7 +353,7 @@ PanelKeyCatcher {
                   text: panel.countLabel(row.modelData)
                   textFormat: Text.PlainText
                   font.family: panel.fontFamily
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
                   color: Qt.darker(panel.foreground, 1.7)
                 }
               }
@@ -354,7 +367,7 @@ PanelKeyCatcher {
               textFormat: Text.PlainText
               elide: Text.ElideRight
               font.family: panel.fontFamily
-              font.pixelSize: Style.font.caption
+              font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
               color: Qt.darker(panel.foreground, 1.9)
             }
 
@@ -454,7 +467,7 @@ PanelKeyCatcher {
                   text: panel.iconDot
                   textFormat: Text.PlainText
                   font.family: panel.fontFamily
-                  font.pixelSize: Style.space(5)
+                  font.pixelSize: Math.round(Style.space(5) * card.panel.textScale)
                   color: panel.agentColor(agentRow.modelData.status)
 
                   SequentialAnimation on opacity {
@@ -492,7 +505,7 @@ PanelKeyCatcher {
                   textFormat: Text.PlainText
                   elide: Text.ElideRight
                   font.family: panel.fontFamily
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
                   color: agentRow.wants || agentRow.lit
                     ? panel.foreground
                     : Qt.darker(panel.foreground, 1.3)
@@ -513,7 +526,7 @@ PanelKeyCatcher {
                   textFormat: Text.PlainText
                   elide: Text.ElideRight
                   font.family: panel.fontFamily
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
                   // Always a step behind the workspace above it, lit or
                   // not: what the agent called itself is the detail, the
                   // place is the heading.
@@ -531,7 +544,7 @@ PanelKeyCatcher {
                   text: panel.agentNote(agentRow.modelData.status)
                   textFormat: Text.PlainText
                   font.family: panel.fontFamily
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
                   // Only the two that are news carry weight. Bold on every
                   // line would put the column back where it started.
                   font.bold: panel.agentWants(agentRow.modelData.status)
@@ -583,7 +596,7 @@ PanelKeyCatcher {
               foreground: panel.foreground
               hoverColor: panel.accent
               fontFamily: panel.fontFamily
-              fontSize: Style.font.iconSmall
+              fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
               onClicked: panel.openSession(row.modelData)
             }
 
@@ -609,7 +622,7 @@ PanelKeyCatcher {
                 foreground: Qt.darker(panel.foreground, 1.4)
                 hoverColor: panel.urgent
                 fontFamily: panel.fontFamily
-                fontSize: Style.font.iconSmall
+                fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
                 onClicked: panel.askKill(row.modelData)
               }
 
@@ -622,7 +635,7 @@ PanelKeyCatcher {
                 foreground: Qt.darker(panel.foreground, 1.4)
                 hoverColor: panel.urgent
                 fontFamily: panel.fontFamily
-                fontSize: Style.font.iconSmall
+                fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
                 onClicked: panel.removeSession(row.modelData)
               }
             }
@@ -648,7 +661,7 @@ PanelKeyCatcher {
         text: "No herdr sessions"
         textFormat: Text.PlainText
         font.family: panel.fontFamily
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
         color: Qt.darker(panel.foreground, 1.8)
       }
     }
