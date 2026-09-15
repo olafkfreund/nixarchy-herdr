@@ -211,7 +211,8 @@ Added on request 2026-09-15, to promote herdr.
 - `Panel.qml`: the bar's server glyph becomes an `Image` of the mark
   plus `MultiEffect { colorization: 1.0; colorizationColor: root.barForeground }`,
   the pattern Omarchy's own `plugins/bar/widgets/Tray.qml` uses for
-  symbolic icons. The badge keeps anchoring to `serverIcon`.
+  symbolic icons. The badge keeps anchoring to `serverIcon` but moves to the
+  bottom-right corner (on request), where it no longer covers the head and horn.
 - `HerdrModel.qml`: `iconServer` removed (no longer used).
 - `README.md`: the logo at the top, credited to herdrdev/herdr under
   Apache-2.0. Apache-2.0 §6 grants no trademark rights; the logo is

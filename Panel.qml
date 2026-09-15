@@ -214,7 +214,8 @@ Panel {
           colorizationColor: root.barForeground
         }
 
-        // The server count rides the glyph's top-right corner, the way an
+        // The server count rides the glyph's bottom-right corner, clear of the herdr
+        // mark's head and horn, the way an
         // unread count rides an app icon, and is sized off the icon font so a
         // theme that resizes the bar takes it along. The ratios are what the
         // default 13px icon can carry: a 12px disc around a 9px digit. Three
@@ -226,7 +227,7 @@ Panel {
           anchors.horizontalCenter: serverIcon.horizontalCenter
           anchors.horizontalCenterOffset: Math.round(Style.bar.iconFont * 0.42)
           anchors.verticalCenter: serverIcon.verticalCenter
-          anchors.verticalCenterOffset: -Math.round(Style.bar.iconFont * 0.40)
+          anchors.verticalCenterOffset: Math.round(Style.bar.iconFont * 0.40)
           visible: herd.reachable && herd.runningCount > 0 && herd.badgeActive
           height: Math.round(Style.bar.iconFont * 0.95)
           width: Math.max(height, count.implicitWidth + Math.round(height * 0.45))
