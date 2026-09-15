@@ -568,7 +568,7 @@ and focuses a p620 agent through a `--remote p620` window.
 
 ### 14. Keybinding docs and an Omarchy Learn menu entry.
 
-**Status: draft, awaiting approval** (added 2026-09-15 on request; steps 0–13
+**Status: approved 2026-09-15** (added on request; steps 0–13
 remain approved and done). Branch `docs/1821-keybinding-docs`, PR into
 `master`.
 
