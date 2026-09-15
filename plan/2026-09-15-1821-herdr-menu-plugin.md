@@ -382,6 +382,11 @@ Added on request 2026-09-15 (menu text too small): `Card.qml` multiplies every
 `HerdrModel` forwards from the surface. The bar leaves it at 1.0; the menu
 asks for 1.3 and widens its card to `Style.space(460)`.
 
+Also found: a plugin's own `PanelWindow` has no per-monitor instance, so the
+menu opened on whichever output Quickshell picked rather than the one being
+used. `Menu.qml` resolves `Hyprland.focusedMonitor` on open and sets
+`screen`, the rule Omarchy's own bar states for a keyboard-summoned surface.
+
 Note for on-screen testing: send one key per `input` call. Two chords in one
 batch raced the menu's focus and the second key was lost.
 

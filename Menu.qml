@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
@@ -35,12 +36,28 @@ Item {
   readonly property string fontFamily: Style.font.family
   function togglePin() {}
 
+  // The output Hyprland has focused, which is where a keyboard-summoned
+  // surface belongs - the same rule Omarchy's own bar uses to route a panel.
+  // Resolved on the way in rather than bound, so the menu does not jump to
+  // another screen while you are reading it.
+  property var targetScreen: null
+
+  function focusedScreen() {
+    var monitor = Hyprland.focusedMonitor
+    var name = monitor ? String(monitor.name || "") : ""
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++)
+      if (screens[i].name === name) return screens[i]
+    return null
+  }
+
   readonly property real textScale: 1.3
   readonly property int cardWidth: Style.space(460)
 
   // Plugin lifecycle hooks. The host calls open(payloadJson) after
   // `omarchy-shell shell summon nixarchy.herdr ...` and close() when hidden.
   function open(payloadJson) {
+    root.targetScreen = root.focusedScreen()
     root.opened = true
     herd.refresh()
     Qt.callLater(function() { card.forceActiveFocus() })
@@ -64,6 +81,7 @@ Item {
     id: panel
 
     visible: root.opened
+    screen: root.targetScreen
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
