@@ -377,6 +377,11 @@ edits only shift the line number.
   unchanged, the agent reports `focused`, and the menu closes.
 - The bar badge still draws and counts alongside the menu.
 
+Added on request 2026-09-15 (menu text too small): `Card.qml` multiplies every
+`font.pixelSize` and action-icon `fontSize` by `panel.textScale`, which
+`HerdrModel` forwards from the surface. The bar leaves it at 1.0; the menu
+asks for 1.3 and widens its card to `Style.space(460)`.
+
 Note for on-screen testing: send one key per `input` call. Two chords in one
 batch raced the menu's focus and the second key was lost.
 

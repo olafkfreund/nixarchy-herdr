@@ -16,6 +16,9 @@ Item {
   readonly property bool opened: host ? host.opened === true : false
   readonly property bool pinned: host ? host.pinned === true : false
   readonly property bool pinnable: host ? host.pinnable !== false : true
+  // A summoned menu is read from further away than a bar dropdown, so the
+  // surface says how big its text should be.
+  readonly property real textScale: host && host.textScale > 0 ? host.textScale : 1.0
   readonly property var activeCard: host ? host.activeCard : null
   readonly property color foreground: host ? host.foreground : Color.foreground
   readonly property color accent: host ? host.accent : Color.accent

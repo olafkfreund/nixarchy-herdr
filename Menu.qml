@@ -35,7 +35,8 @@ Item {
   readonly property string fontFamily: Style.font.family
   function togglePin() {}
 
-  readonly property int cardWidth: Style.space(380)
+  readonly property real textScale: 1.3
+  readonly property int cardWidth: Style.space(460)
 
   // Plugin lifecycle hooks. The host calls open(payloadJson) after
   // `omarchy-shell shell summon nixarchy.herdr ...` and close() when hidden.
