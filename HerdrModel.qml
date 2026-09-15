@@ -56,6 +56,19 @@ Item {
   readonly property color working: "#D6A84B"
 
   property var sessions: []
+  // Sessions this machine answered with, kept apart from the remote ones so a
+  // host that goes quiet does not take the local list down with it.
+  property var localSessions: []
+
+  // Other machines, named in ~/.config/omarchy/herdr.json as
+  // { "hosts": ["razer"] }. Only a surface that asks for them polls them: the
+  // bar stays local, so an unreachable host can never slow the badge down.
+  property bool remote: false
+  property var hostNames: []
+  property var hostSessions: ({})
+  // Per host: "ok" when it answered with servers running, "empty" when it
+  // answered with none, "down" when it did not answer.
+  property var hostState: ({})
   property int runningCount: 0
   property int agentCount: 0
   property int blockedCount: 0
@@ -130,9 +143,83 @@ Item {
   }
 
   function refresh() {
-    if (listProc.running) return
-    listProc.command = [root.script, "list"]
-    listProc.running = true
+    if (!listProc.running) {
+      listProc.command = [root.script, "list"]
+      listProc.running = true
+    }
+    if (!remote) return
+    // One process per host, and a host whose last poll is still out is
+    // skipped rather than queued: an unreachable one costs the script's full
+    // 8s ceiling, which is longer than the poll interval.
+    for (var i = 0; i < hostPolls.count; i++) {
+      var poll = hostPolls.objectAt(i)
+      if (poll && !poll.running) poll.start()
+    }
+  }
+
+  // Everything drawn, local first and then each host in the order the config
+  // names them, with the counts taken over the lot so the title and the badge
+  // describe what is on screen.
+  function rebuild() {
+    var all = localSessions.slice()
+    if (remote)
+      for (var i = 0; i < hostNames.length; i++) {
+        var list = hostSessions[hostNames[i]] || []
+        for (var j = 0; j < list.length; j++) all.push(list[j])
+      }
+
+    var running = 0, agents = 0, blocked = 0, done = 0, working = 0
+    for (var k = 0; k < all.length; k++) {
+      var session = all[k]
+      if (session.running) running++
+      agents += session.agents || 0
+      blocked += session.blocked || 0
+      done += session.done || 0
+      working += session.working || 0
+    }
+
+    sessions = all
+    runningCount = running
+    agentCount = agents
+    blockedCount = blocked
+    doneCount = done
+    workingCount = working
+
+    updateAttention(all)
+    if (opened && !cursorPlaced) {
+      cursor = bestRow()
+      cursorPlaced = true
+      var row = rowAt(cursor)
+      if (row) showRow(row.sessionIndex)
+    }
+    if (cursor > navRows.length - 1) cursor = navRows.length - 1
+  }
+
+  // What a host's dot says: it answered and something is running, it answered
+  // with nothing running, or it did not answer at all.
+  function stateOfHost(host) {
+    if (!host) return "ok"
+    return hostState[host] || "down"
+  }
+
+  function applyHostPayload(host, text) {
+    // New objects every time: assigning the same object back is not a change
+    // to QML, and the title line would keep the state from before it answered.
+    var next = {}, state = {}, key
+    for (key in hostSessions) next[key] = hostSessions[key]
+    for (key in hostState) state[key] = hostState[key]
+    try {
+      var data = JSON.parse(text)
+      if (data.ok !== true) throw new Error("not ok")
+      next[host] = data.sessions || []
+      state[host] = (data.sessions || []).some(function (s) { return s.running }) ? "ok" : "empty"
+    } catch (e) {
+      next[host] = []
+      state[host] = "down"
+    }
+    hostSessions = next
+    hostState = state
+    rebuild()
   }
 
   function run(action, name, extra) {
@@ -403,9 +490,50 @@ Item {
   // which is worth saying out loud.
   function sessionLabel(session) {
     if (!session) return ""
-    if (session.isDefault) return "Shared session"
-    if (/^[0-9]+$/.test(session.name)) return "Workspace " + session.name
-    return session.name
+    var label
+    if (session.isDefault) label = "Shared session"
+    else if (/^[0-9]+$/.test(session.name)) label = "Workspace " + session.name
+    else label = session.name
+    // Which machine it is on, said on the row itself rather than in a header
+    // above a group: the rows are already sorted host by host, and a header
+    // would have to live inside a delegate the bar panel shares.
+    return session.host ? session.host + "  \u00b7  " + label : label
+  }
+
+  // What each configured host is doing, for the title line: answered with
+  // something running, answered with nothing, or did not answer.
+  function hostSummary() {
+    if (!remote || hostNames.length === 0) return ""
+    var parts = []
+    for (var i = 0; i < hostNames.length; i++) {
+      var state = stateOfHost(hostNames[i])
+      parts.push(hostNames[i] + " "
+                 + (state === "ok" ? "\u25cf" : state === "empty" ? "\u25cb" : "\u2013"))
+    }
+    return parts.join("   ")
+  }
+
+  // Asked for by a key in the card, answered by whichever surface can show an
+  // input. The bar panel does not connect it, so `n` does nothing there.
+  signal newSessionRequested()
+  function requestNew() { newSessionRequested() }
+
+  // Create on the host the cursor is on, so `n` while reading razer's
+  // sessions makes one on razer.
+  function hostAtCursor() {
+    var session = sessionAt(cursor)
+    return session && session.host ? String(session.host) : ""
+  }
+
+  function newSession(host, name, dir) {
+    if (!validName(name) || actionProc.running) return
+    pendingName = name
+    var command = [root.script]
+    if (host) command.push("--host", host)
+    command.push("new", name)
+    if (dir !== undefined && dir !== "") command.push(dir)
+    actionProc.command = command
+    actionProc.running = true
   }
 
   // A stopped session names what it is holding rather than only saying it is
@@ -523,7 +651,9 @@ Item {
   function titleText() {
     var s = runningCount === 1 ? " server" : " servers"
     var a = agentCount === 1 ? " agent" : " agents"
-    return "Herdr (" + runningCount + s + ", " + agentCount + a + ")"
+    var title = "Herdr (" + runningCount + s + ", " + agentCount + a + ")"
+    var hosts = hostSummary()
+    return hosts === "" ? title : title + "   " + hosts
   }
 
   // The bar shows a bare number, which says nothing about what it counts. The
@@ -583,20 +713,8 @@ Item {
       reachable = data.ok === true
       errorText = data.error || ""
       if (!reachable) return
-      sessions = data.sessions || []
-      updateAttention(sessions)
-      if (opened && !cursorPlaced) {
-        cursor = bestRow()
-        cursorPlaced = true
-        var row = rowAt(cursor)
-        if (row) showRow(row.sessionIndex)
-      }
-      runningCount = data.running || 0
-      agentCount = data.agents || 0
-      blockedCount = data.blocked || 0
-      doneCount = data.done || 0
-      workingCount = data.working || 0
-      if (cursor > navRows.length - 1) cursor = navRows.length - 1
+      localSessions = data.sessions || []
+      rebuild()
     } catch (e) {
       reachable = false
       errorText = "unexpected output from herdr-sessions"
@@ -615,6 +733,54 @@ Item {
       cursor = -1
       column = root.columnRow
       cursorPlaced = false
+    }
+  }
+
+  // The host list, watched so an edit applies without a restart. A missing or
+  // unreadable file means this machine only.
+  FileView {
+    id: hostsFile
+    path: Quickshell.env("HOME") + "/.config/omarchy/herdr.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.hostNames = root.parseHosts(text())
+    onLoadFailed: root.hostNames = []
+    onFileChanged: reload()
+  }
+
+  // Shape-checked here as well as in the script: a name that is not a host
+  // name is dropped rather than passed on.
+  function parseHosts(text) {
+    try {
+      var list = (JSON.parse(text) || {}).hosts || []
+      var out = []
+      for (var i = 0; i < list.length; i++) {
+        var host = String(list[i])
+        if (/^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(host) && out.indexOf(host) < 0)
+          out.push(host)
+      }
+      return out
+    } catch (e) {
+      return []
+    }
+  }
+
+  Instantiator {
+    id: hostPolls
+    model: root.remote ? root.hostNames : []
+    delegate: Process {
+      id: hostProc
+      required property string modelData
+      function start() {
+        command = [root.script, "--host", modelData, "list"]
+        running = true
+      }
+      stdout: StdioCollector {
+        onStreamFinished: root.applyHostPayload(hostProc.modelData, text)
+      }
+      onExited: function (code) {
+        if (code !== 0) root.applyHostPayload(hostProc.modelData, "")
+      }
     }
   }
 
@@ -650,7 +816,10 @@ Item {
   // one poll every twenty seconds and catches the moment you start something.
   Timer {
     interval: root.opened ? 3000 : (root.badgeActive ? 5000 : 20000)
-    running: true
+    // The bar keeps its badge current all the time. A surface that reaches
+    // other machines polls only while it is open, so closing the menu stops
+    // every ssh call; opening it refreshes straight away.
+    running: !root.remote || root.opened
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()

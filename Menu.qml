@@ -75,6 +75,38 @@ Item {
   HerdrModel {
     id: herd
     host: root
+    // Only the menu reaches other machines: the bar's badge stays local so a
+    // host that is down can never slow it.
+    remote: true
+    onNewSessionRequested: root.beginNew()
+  }
+
+  // The new-session line. One field rather than a form: a name, optionally
+  // followed by an absolute path to open it in.
+  property bool newOpen: false
+  property string newHost: ""
+
+  function beginNew() {
+    root.newHost = herd.hostAtCursor()
+    root.newOpen = true
+    newField.text = ""
+    Qt.callLater(function () { newField.forceActiveFocus() })
+  }
+
+  function cancelNew() {
+    root.newOpen = false
+    newField.text = ""
+    Qt.callLater(function () { card.forceActiveFocus() })
+  }
+
+  function submitNew() {
+    var words = newField.text.trim().split(/\s+/)
+    var name = words.length > 0 ? words[0] : ""
+    var dir = words.length > 1 ? words.slice(1).join(" ") : ""
+    if (name === "") { root.cancelNew(); return }
+    herd.newSession(root.newHost, name, dir)
+    root.cancelNew()
+    root.close()
   }
 
   PanelWindow {
@@ -109,7 +141,8 @@ Item {
       id: surface
       width: Math.min(root.cardWidth, panel.width - Style.gapsOut * 2)
       height: Math.min(card.bodyHeight + padding * 2
-                       + Border.top(borderSpec) + Border.bottom(borderSpec),
+                       + Border.top(borderSpec) + Border.bottom(borderSpec)
+                       + (root.newOpen ? newRow.height + Style.space(6) : 0),
                        panel.height - Style.gapsOut * 2)
       anchors.horizontalCenter: parent.horizontalCenter
       y: Math.max(Style.gapsOut, Math.round((panel.height - height) / 2))
@@ -121,15 +154,77 @@ Item {
 
       MouseArea { anchors.fill: parent; onClicked: {} }
 
-      Card {
-        id: card
+      Item {
         anchors.fill: parent
         anchors.topMargin: surface.contentTopInset
         anchors.rightMargin: surface.contentRightInset
         anchors.bottomMargin: surface.contentBottomInset
         anchors.leftMargin: surface.contentLeftInset
-        panel: herd
-        maxHeight: panel.height - Style.gapsOut * 2 - surface.padding * 2
+
+        // Card.qml fills its parent by default; a positioner cannot override
+        // that, so the fill is cleared here and the card sits above the input.
+        Card {
+          id: card
+          anchors.fill: undefined
+          anchors.top: parent.top
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: newRow.top
+          anchors.bottomMargin: root.newOpen ? Style.space(6) : 0
+          panel: herd
+          maxHeight: panel.height - Style.gapsOut * 2 - surface.padding * 2
+                     - (root.newOpen ? newRow.height + Style.space(6) : 0)
+        }
+
+        Item {
+          id: newRow
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          height: root.newOpen ? newField.implicitHeight + Style.space(10) : 0
+          visible: root.newOpen
+          clip: true
+
+          Rectangle {
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+          }
+
+          Row {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(8)
+            anchors.rightMargin: Style.space(8)
+            spacing: Style.space(6)
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.newHost === "" ? "new session" : "new on " + root.newHost
+              textFormat: Text.PlainText
+              font.family: root.fontFamily
+              font.pixelSize: Math.round(Style.font.caption * root.textScale)
+              color: Qt.darker(root.foreground, 1.5)
+            }
+
+            TextInput {
+              id: newField
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - parent.spacing * 2 - Style.space(120)
+              font.family: root.fontFamily
+              font.pixelSize: Math.round(Style.font.body * root.textScale)
+              color: root.foreground
+              selectByMouse: true
+              // The name, then an optional absolute directory. The script
+              // refuses anything else, so this only has to carry the words.
+              Keys.onPressed: function (event) {
+                if (event.key === Qt.Key_Escape) { root.cancelNew(); event.accepted = true }
+                else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  root.submitNew(); event.accepted = true
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

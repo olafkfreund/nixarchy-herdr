@@ -106,6 +106,7 @@ PanelKeyCatcher {
     else if (t === "K" && session) panel.askKill(session)
     else if (t === "p" && panel.pinnable !== false) panel.togglePin()
     else if (t === "r") panel.refresh()
+    else if (t === "n") panel.requestNew()
   }
 
   Column {

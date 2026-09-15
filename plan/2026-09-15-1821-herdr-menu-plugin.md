@@ -390,25 +390,60 @@ used. `Menu.qml` resolves `Hyprland.focusedMonitor` on open and sets
 Note for on-screen testing: send one key per `input` call. Two chords in one
 batch raced the menu's focus and the second key was lost.
 
-### 9. `Menu.qml`, `HerdrModel.qml`: hosts in the menu.
-- Read `~/.config/omarchy/herdr.json`, poll one `Process` per host while
-  the menu is open, and merge results with a host header and `●`/`○`/`–`.
-- `Tab` / `Shift+Tab` move between host groups.
+### 9. `Menu.qml`, `HerdrModel.qml`, `Card.qml`: hosts in the menu.
+
+- `HerdrModel` reads `~/.config/omarchy/herdr.json` through a watched
+  `FileView` (shape-checked, missing or broken means none), and an
+  `Instantiator` makes one `Process` per host.
 - A host whose previous poll is still running is skipped, not queued (an
   unreachable host takes the full 8s).
-- `n` opens the new-session form (name, directory) for the current group's
-  host.
+- Local and remote sessions are merged, local first, then hosts in config
+  order, with counts taken over the whole list.
+- Only a surface with `remote: true` (the menu) polls hosts, and its timer
+  runs only while it is open. The bar stays local and always on.
+- `n` asks the surface for a new session. The menu shows one input line
+  (`name` or `name /absolute/dir`) and creates the session on the host the
+  cursor is on.
+
+Deviations from the approved design, made in the step 9 commit:
+
+- **No separate host header rows, and `Tab` does not jump between hosts.**
+  A header row would have to live inside the session delegate the bar panel
+  shares, and `Tab` already cycles a row's buttons there (upstream
+  behaviour). Instead each remote row is labelled `host · name`, and the
+  title line carries each host's state: `●` answered with something
+  running, `○` answered with nothing running, `–` no answer. `j`/`k` walk
+  every row across hosts.
+- **One input line instead of a two-field form** for `n`. The script
+  already validates both words.
+
+Found in step 9: the session restart left the local repository with five
+empty object files (the step 9 commit, its tree and three blobs) and `HEAD`
+unreadable. The plugin clone had pulled the commit before the crash, so the
+objects were fetched back from it, the empty files kept aside, and `git fsck`
+passed. Also fixed here: the menu's model had polled razer every 20s while
+closed, because the timer ran unconditionally.
+And the new-session line first drew over the title: `Card.qml` sets
+`anchors.fill: parent` on itself, which a `Column` cannot override. `Menu.qml`
+now clears that fill, anchors the card above the input, and grows the outer
+card by the input's height while it is open.
+And the title kept `–` after razer answered: `applyHostPayload` mutated
+the existing `hostState` object and assigned it back, which QML does not
+see as a change. It now builds new objects.
 
 → **Verify:**
-- With `{"hosts":["razer"]}`, razer's sessions appear under a `razer`
-  header.
-- With `{"hosts":["razer","nosuchhost"]}`, the menu opens straight away,
+
+- With `{"hosts":["razer"]}`, razer's sessions appear as `razer · …` rows and
+  the title shows razer's state.
+- With `{"hosts":["razer","nosuchhost"]}`, the menu opens at once,
   `nosuchhost` shows `–`, and razer still renders.
-- With the file deleted, the menu shows local only.
-- After closing the menu,
-  `pgrep -af 'ssh.*nixarchy-herdr' | grep -v ControlMaster` is empty
-  within 10s, so there is no polling while closed.
-- `n` on razer creates a session (clean up after).
+- With the file removed, the menu shows local sessions only and no host
+  state.
+- After closing the menu, no `herdr-sessions --host` process remains within
+  10s, and the shared ssh connection (`ssh: …nixarchy-herdr-… [mux]`) exits
+  within about 70s (`ControlPersist=60`).
+- `n` on a razer row, typing `nhtest-menu /tmp`, creates the session on razer
+  (clean up after).
 
 ### 10. `Menu.qml`: prompt line.
 - `a` opens a prompt line for the selected agent. `Enter` sends through
