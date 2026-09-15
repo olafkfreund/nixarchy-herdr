@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 1821
 intent: intent/2026-09-15-1821-herdr-menu-plugin.md
 ---
