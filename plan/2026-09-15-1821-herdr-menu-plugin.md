@@ -261,14 +261,37 @@ unreachable host costs the full 8s. Step 9 must not start a new poll for a
 host while that host's previous one is still running.
 
 ### 6. `bin/herdr-sessions`: `new`.
+
+- `new S [DIR]` refuses a bad name, `default`, a relative or (locally)
+  missing DIR, and a name that already exists on that host.
+- `show_session` takes the terminal's directory as an optional argument,
+  so `new` reuses its launch code.
+- Remote: after the `--remote` window starts, it waits (up to 10s) for the
+  server to report running, then creates a `/DIR` workspace over ssh.
+
+Found in step 6: `herdr --remote H --session S` leaves a local directory
+`~/.config/herdr/sessions/S` holding only `herdr-client.log` (no
+`session.json`, no server). Every remote attach does this, and the step 0
+probe did too. Left alone, it shows as a phantom stopped session and blocks
+`new S` locally. So `list` now hides stopped sessions that have no
+`session.json`, and `new` checks existence through the script's own `list`
+(locally, and on the remote host). Stopped sessions with a `session.json`
+still show, as upstream intends.
+
 → **Verify:**
-- `new -x`, `new 'a b'` and `new Devlopment-Local` each return `ok:false`, and
-  `herdr session list --json` is unchanged.
-- `new nhtest-local /tmp` opens one foot window, and the session shows
-  `running` with its cwd under `/tmp`.
-- `--host razer new nhtest-razer /tmp` opens one remote window, and razer
-  lists `nhtest-razer` running.
-- Clean up both with `kill` then `delete`.
+
+- `new -x`, `new 'a b'`, `new Devlopment-Local`, `new default`, a relative
+  DIR and a missing DIR each return `ok:false`, with the session list and
+  window count unchanged.
+- `new nhtest-local /tmp` opens one window, the session runs, pane `w1:p1`
+  has cwd `/tmp`, and the window pairs with the session. A second
+  `new nhtest-local` is refused without a new window.
+- `--host razer new nhtest-razer /tmp` opens one window paired with
+  `host: "razer"`, razer lists it running, and its workspace `w2` has cwd
+  `/tmp`.
+- A hand-made `sessions/nhtest-ghost` holding only `herdr-client.log` is
+  hidden from `list`, and `new nhtest-ghost /tmp` succeeds.
+- Clean up with `kill` then `delete`, locally and over `--host razer`.
 
 ### 7. `bin/herdr-sessions`: `prompt`.
 - Set up: in a throwaway local session `nhtest-prompt`, start `claude` in
@@ -374,6 +397,7 @@ and focuses a p620 agent through a `--remote p620` window.
 | `bin/herdr-sessions --host nosuchhost list` | `ok:false`, within 8s |
 | `bin/herdr-sessions --host 'bad;name' list` | `ok:false`, fake `ssh` never called |
 | `bin/herdr-sessions new -x` / `new 'a b'` / `new <existing>` | `ok:false`, session list unchanged |
+| stopped session dir with only `herdr-client.log` | hidden from `list`; `new` on that name succeeds |
 | injection prompt `'"; touch /tmp/nh-injected; "'` (local and razer) | no `/tmp/nh-injected` on either host |
 | `hyprctl clients -j \| jq length` before and after focusing an attached agent | equal |
 | menu closed for 10s: `pgrep -af 'ssh.*nixarchy-herdr' \| grep -v ControlMaster` | empty |

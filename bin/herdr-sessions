@@ -13,6 +13,10 @@
 #                 the same, but land on one agent's pane inside it
 #   kill <name>   signal the session's server until it is gone
 #   delete <name> remove a stopped session's directory
+#   new <name> [dir]
+#                 start a session that does not exist yet, opened in dir
+#   --host <h> <command>
+#                 run any of the above against another machine over ssh
 #   demo on|off   invented sessions instead of yours, for screenshots
 #
 # Demo mode exists so a screenshot never carries real project names or agent
@@ -357,7 +361,7 @@ cmd_list() {
   # in. Reading it is what makes a stopped row say what it is holding rather
   # than only that it is down - the difference between a session worth starting
   # back up and a name left over from an afternoon.
-  local snapshots='' saved='' name is_default running dir snap labels
+  local snapshots='' saved='' ghosts='' name is_default running dir snap labels
   # Two ceilings on the loop itself. The per-source caps above bound any one
   # answer; these bound the sum of them, which is the case a hundred sessions
   # each just under their own limit would otherwise walk straight through.
@@ -382,7 +386,13 @@ cmd_list() {
       continue
     fi
 
-    readable_file "$dir/session.json" || continue
+    # `herdr --remote` leaves a local directory under the remote session's
+    # name holding nothing but herdr-client.log. It is not a session: there is
+    # no layout to restore, and it would shadow a real one called the same.
+    if ! readable_file "$dir/session.json"; then
+      ghosts+="$name"$'\n'
+      continue
+    fi
     # The label herdr shows is the name a workspace was given, and the last
     # part of the directory it was opened in otherwise - the same two, in the
     # same order, that a running snapshot resolves to its label.
@@ -411,10 +421,13 @@ cmd_list() {
     --argjson snapshots "$snapshots" \
     --argjson saved "$saved" \
     --argjson agentCap "$AGENT_COUNT_CAP" \
-    --arg windows "$windows" '
+    --arg windows "$windows" \
+    --arg ghosts "$ghosts" '
     ($windows | split("\n") | map(select(length > 0) | split("\t"))
       | map({key: .[0], value: .[1]}) | from_entries) as $win
+    | ($ghosts | split("\n") | map(select(length > 0))) as $ghostNames
     | [.sessions[]?
+       | select(.name as $n | $ghostNames | index($n) | not)
        | .name as $name
        | (($snapshots[$name].result.snapshot) // {}) as $snap
        | ($snap.agents // []) as $agents
@@ -506,7 +519,7 @@ cmd_list_remote() {
 # Bring up the window showing a session, or start one. Returns 0 once
 # something has been done, 1 when no terminal could be started.
 show_session() {
-  local name="$1"
+  local name="$1" dir="${2:-$HOME}"
 
   local address workspace
   IFS=$'\t' read -r address workspace < <(
@@ -562,9 +575,9 @@ show_session() {
   fi
 
   if command -v foot >/dev/null 2>&1; then
-    launch+=(foot "--app-id=$APP_ID" "--working-directory=$HOME" -e "${herdr_cmd[@]}")
+    launch+=(foot "--app-id=$APP_ID" "--working-directory=$dir" -e "${herdr_cmd[@]}")
   elif command -v xdg-terminal-exec >/dev/null 2>&1; then
-    launch+=(xdg-terminal-exec "--app-id=$APP_ID" "--dir=$HOME" -- "${herdr_cmd[@]}")
+    launch+=(xdg-terminal-exec "--app-id=$APP_ID" "--dir=$dir" -- "${herdr_cmd[@]}")
   else
     return 1
   fi
@@ -607,6 +620,63 @@ cmd_focus() {
   fi
 
   show_session "$name" || die "no terminal available"
+  printf '{"ok":true}\n'
+}
+
+# ------------------------------------------------------------ new session
+
+# Whether a session of that name exists on the host this runs against,
+# running or not. An unreachable host counts as "cannot tell", which refuses.
+# Asked through this script's own list, so a leftover remote-client directory
+# does not count as a session.
+session_exists() {
+  local json
+  if [[ -n $HOST ]]; then
+    json=$(ssh_run "bash -s -- list --no-windows" < "$SCRIPT" 2>/dev/null | head -c "$((TOTAL_BYTE_CAP + 1))") || true
+  else
+    json=$(cmd_list --no-windows 2>/dev/null) || true
+  fi
+  printf '%s' "$json" | jq -e '.ok == true' >/dev/null 2>&1 || return 2
+  printf '%s' "$json" | jq -e --arg name "$1" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1
+}
+
+# A new session and nothing else: a name that already exists is refused rather
+# than attached to, so "new" can never quietly become "open" or restart a
+# stopped session somebody meant to leave alone.
+#
+# Locally the terminal starts in dir, which is where herdr opens the first
+# workspace. Over ssh the terminal's directory is this machine's, so the
+# directory is given to the remote server as a workspace once it is up.
+cmd_new() {
+  local name="${1-}" dir="${2-}"
+  valid_session_name "$name" || die "not a session name"
+  [[ $name != default ]] || die "default already exists"
+  if [[ -n $dir ]]; then
+    [[ $dir == /* && $dir != *$'\n'* && ${#dir} -le 4096 ]] || die "directory must be an absolute path"
+    [[ -n $HOST || -d $dir ]] || die "no such directory"
+  fi
+
+  local rc=0
+  session_exists "$name" || rc=$?
+  (( rc != 2 )) || die "could not read the session list"
+  (( rc != 0 )) || die "a session called $name already exists"
+
+  local launch_dir=""
+  [[ -n $HOST ]] || launch_dir=$dir
+  show_session "$name" "$launch_dir" || die "no terminal available"
+
+  if [[ -n $HOST && -n $dir ]]; then
+    local i running=""
+    for ((i = 0; i < 20; i++)); do
+      running=$(ssh_run "herdr session list --json" </dev/null 2>/dev/null |
+        jq -r --arg name "$name" '.sessions[]? | select(.name == $name) | .running' 2>/dev/null) || true
+      [[ $running == true ]] && break
+      sleep 0.5
+    done
+    [[ $running == true ]] || die "session started, but $HOST never reported it running"
+    ssh_run "$(printf '%q ' herdr --session "$name" workspace create --cwd "$dir" --focus)" \
+      </dev/null >/dev/null 2>&1 || die "session started, but the workspace in $dir was not created"
+  fi
   printf '{"ok":true}\n'
 }
 
@@ -708,6 +778,7 @@ case "${1:-list}" in
   # cannot reach a real session.
   open) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_open "${1-}"; fi ;;
   focus) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_focus "${1-}" "${2-}"; fi ;;
+  new) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_new "${1-}" "${2-}"; fi ;;
   kill|delete)
     action=$1; shift
     valid_session_name "${1-}" || die "not a session name"
