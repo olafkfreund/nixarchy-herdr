@@ -222,10 +222,12 @@ Item {
     rebuild()
   }
 
-  function run(action, name, extra) {
-    if (!validName(name) || actionProc.running) return
-    pendingName = name
-    var command = [root.script, action, name]
+  function run(action, session, extra) {
+    if (!session || !validName(session.name) || actionProc.running) return
+    pendingName = session.name
+    var command = [root.script]
+    if (session.host) command.push("--host", session.host)
+    command.push(action, session.name)
     if (extra !== undefined && extra !== "") command.push(extra)
     actionProc.command = command
     actionProc.running = true
@@ -242,7 +244,7 @@ Item {
   // Focus the window this session is already showing, or open one.
   function openSession(session) {
     if (!session || !validName(session.name)) return
-    run("open", session.name)
+    run("open", session)
     dismiss()
   }
 
@@ -260,7 +262,7 @@ Item {
     if (!session || !agent) return
     if (!validPane(agent.pane)) { openSession(session); return }
     if (!validName(session.name)) return
-    run("focus", session.name, agent.pane)
+    run("focus", session, agent.pane)
     dismiss()
   }
 
@@ -271,7 +273,7 @@ Item {
   // here at all.
   function removeSession(session) {
     if (!session || session.isDefault || session.running) return
-    run("delete", session.name)
+    run("delete", session)
   }
 
   // How a running server is ended here, and the only way: `herdr session stop`
@@ -283,7 +285,7 @@ Item {
   // The shared session is killed like any other. It wedges like any other.
   function killSession(session) {
     if (!session || !session.running || !validName(session.name)) return
-    run("kill", session.name)
+    run("kill", session)
   }
 
   // Killing is the one thing here that cannot be taken back: the server is

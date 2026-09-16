@@ -392,6 +392,14 @@ batch raced the menu's focus and the second key was lost.
 
 ### 9. `Menu.qml`, `HerdrModel.qml`, `Card.qml`: hosts in the menu.
 
+Correction 2026-09-16: the shared action dispatcher discarded `session.host`.
+Pass the session object through open, focus, kill and delete, and prepend
+`--host` for remote sessions. This restores the approved Actions behavior
+above, including agent-focus fallback. Verify with
+`node tests/session-actions.cjs`; the check exercises the actual model
+functions with a mocked process and identically named local/remote sessions.
+Rollback: revert the remote-session-actions fix commit.
+
 - `HerdrModel` reads `~/.config/omarchy/herdr.json` through a watched
   `FileView` (shape-checked, missing or broken means none), and an
   `Instantiator` makes one `Process` per host.
