@@ -24,7 +24,8 @@ Each row in the panel is one session:
 - the projects open inside it, taken from the workspace labels
 - how many agents it holds, and what the most urgent of them is up to
 - what every one of those agents is doing, from its terminal title, with its
-  own status dot beside it. All of them, however many and wherever herdr keeps
+  own status dot beside it. The line above the title names where it sits: its
+  workspace, then its tab if you gave the tab a name. All of them, however many and wherever herdr keeps
   them: a pane in a second tab counts the same as one sitting in front of you.
   Each of those lines is its own way in
 - a dot in the session's colour, taking the state of its loudest agent
@@ -148,6 +149,27 @@ every session looks like it has no window and a click opens a new one. `ss`
 (from iproute2) is what the skull button uses to find the process behind a
 session's socket, and a window is opened in `foot`, falling back to
 `xdg-terminal-exec`.
+
+## Theme colours
+
+Themes can optionally set the done and working colours in their `shell.toml`:
+
+```toml
+[herdr]
+done = "#006800"
+working = "#6f5500"
+```
+
+These example colours are from Modus Operandi. `done` colours the finished
+labels, dots, row highlights and count badge. `working` colours the working
+labels, dots and count badge. Both follow Omarchy theme switches; choose
+colours that remain readable on the panel background and behind badge text.
+
+Without these entries, the widget keeps its original colours: green for done,
+amber for the working badge and the theme accent for working labels and dots.
+The blocked state continues to use the theme's urgent colour. These entries
+can also be set in `~/.config/omarchy/shell.toml`, where they override the
+selected theme.
 
 ## Removing it
 
