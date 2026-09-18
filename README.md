@@ -25,7 +25,7 @@ Each row in the panel is one session:
 - how many agents it holds, and what the most urgent of them is up to
 - what every one of those agents is doing, from its terminal title, with its
   own status dot beside it. The line above the title names where it sits: its
-  workspace, then its tab. All of them, however many and wherever herdr keeps
+  workspace, then its tab if you gave the tab a name. All of them, however many and wherever herdr keeps
   them: a pane in a second tab counts the same as one sitting in front of you.
   Each of those lines is its own way in
 - a dot in the session's colour, taking the state of its loudest agent

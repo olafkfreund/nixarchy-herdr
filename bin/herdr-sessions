@@ -382,9 +382,13 @@ cmd_list() {
           | map({key: (.workspace_id // ""), value: (.label // "")})
           | from_entries) as $wslabels
        # Tab names live on the tab and the agent only carries the id it sits
-       # in - the same join as the workspace labels above.
+       # in - the same join as the workspace labels above. A tab nobody named
+       # comes back with its number as the label ("1"), and that is not a name
+       # worth printing after every workspace, so those join as empty.
        | (($snap.tabs // [])
-          | map({key: (.tab_id // ""), value: (.label // "")})
+          | map({key: (.tab_id // ""),
+                 value: (if (.label // "") == ((.number // "") | tostring)
+                         then "" else (.label // "") end)})
           | from_entries) as $tablabels
        | {
            name: $name,
