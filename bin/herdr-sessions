@@ -817,8 +817,12 @@ cmd_delete() {
   valid_session_name "$name" || die "not a session name"
   [[ $name == default ]] && die "the default session is not deleted from here"
   # No `--` before the name: herdr's argument parser does not take one, and a
-  # session name has already been checked against the shape above.
-  herdr session delete "$name" >/dev/null 2>&1 || true
+  # session name has already been checked against the shape above. herdr's own
+  # stderr is what it said went wrong, and it is the only thing that can tell
+  # the panel why the row is still there; swallowing it reported a delete that
+  # never happened.
+  local err
+  err=$(herdr session delete "$name" 2>&1 >/dev/null) || die "${err:-herdr could not delete that session}"
   printf '{"ok":true}\n'
 }
 
