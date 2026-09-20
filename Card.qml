@@ -67,7 +67,7 @@ PanelKeyCatcher {
   }
 
   function beginConfirm() {
-    killConfirm.selectedIndex = 0
+    destroyConfirm.selectedIndex = 0
     Qt.callLater(function() { confirmKeys.forceActiveFocus() })
   }
 
@@ -96,7 +96,7 @@ PanelKeyCatcher {
   // key is the shifted `K`, which arrives as an ordinary letter.
   onDeleteRequested: {
     var target = panel.sessionAt(panel.cursor)
-    if (target) panel.removeSession(target)
+    if (target) panel.askDelete(target)
   }
   onTextKey: function(t) {
     // The letter keys stay about the server, wherever inside it the
@@ -205,14 +205,15 @@ PanelKeyCatcher {
     Item {
       id: staleBox
       width: parent.width
-      height: panel.reachable ? 0 : staleWarning.implicitHeight + Style.space(6)
-      visible: !panel.reachable
+      height: staleBox.visible ? staleWarning.implicitHeight + Style.space(6) : 0
+      visible: !panel.reachable || panel.actionError !== ""
 
       Text {
         id: staleWarning
         anchors.verticalCenter: parent.verticalCenter
         width: parent.width
-        text: panel.errorText !== "" ? panel.errorText : "Could not reach herdr."
+        text: panel.actionError !== "" ? panel.actionError
+          : (panel.errorText !== "" ? panel.errorText : "Could not reach herdr.")
         textFormat: Text.PlainText
         elide: Text.ElideRight
         font.family: panel.fontFamily
@@ -636,7 +637,7 @@ PanelKeyCatcher {
                 hoverColor: panel.urgent
                 fontFamily: panel.fontFamily
                 fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
-                onClicked: panel.removeSession(row.modelData)
+                onClicked: panel.askDelete(row.modelData)
               }
             }
           }
@@ -686,23 +687,23 @@ PanelKeyCatcher {
 
     Keys.priority: Keys.BeforeItem
     Keys.onPressed: function(event) {
-      if (killConfirm.handleKey(event)) event.accepted = true
+      if (destroyConfirm.handleKey(event)) event.accepted = true
     }
 
     ConfirmDialog {
-      id: killConfirm
+      id: destroyConfirm
       anchors.fill: parent
       opened: panel.confirmOpen
       // ConfirmDialog draws the message with the shell's own Text, so
       // `textFormat` there is not ours to set and the session name - which
       // is whatever was passed to `herdr --session` - is stripped instead.
-      message: panel.plain(panel.killMessage())
-      confirmText: "Kill"
+      message: panel.plain(panel.confirmMessage())
+      confirmText: panel.confirmAction === "delete" ? "Delete" : "Kill"
       background: Color.background
       foreground: panel.foreground
       fontFamily: panel.fontFamily
-      onCanceled: panel.closeKill()
-      onConfirmed: panel.confirmKill()
+      onCanceled: panel.closeConfirm()
+      onConfirmed: panel.confirmPending()
     }
   }
 }

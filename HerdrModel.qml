@@ -81,10 +81,16 @@ Item {
     blockedCount > 0 || doneCount > 0 || workingCount > 0
   property bool reachable: true
   property string errorText: ""
+  // Why an action refused, as it said so itself. `errorText` is about the
+  // list not arriving; this is about the one thing you just pressed, which
+  // otherwise failed by leaving the row exactly where it was.
+  property string actionError: ""
   // Session the script is currently acting on, so its row can dim.
   property string pendingName: ""
-  // The session the kill dialog is asking about, held while it is open.
-  property var killTarget: null
+  // The session the confirm dialog is asking about, held while it is open,
+  // and which of the two destructive actions it will run on Confirm.
+  property var confirmTarget: null
+  property string confirmAction: ""
   property bool confirmOpen: false
 
   // Which agent spoke last, as "<session>\u0000<pane>", and every agent that
@@ -288,37 +294,53 @@ Item {
     run("kill", session)
   }
 
-  // Killing is the one thing here that cannot be taken back: the server is
-  // gone and so is everything that was running inside it, without anything
-  // being asked to finish first. Opening a session, focusing an agent and even
-  // deleting a stopped session are all recoverable or trivial by comparison,
-  // so this is the only action that stops to ask.
+  // Both of these destroy something a keystroke away from the cursor, so both
+  // stop to ask. Killing takes the server and everything running inside it
+  // without asking anything to finish; deleting throws away the state herdr
+  // kept for a stopped session. Neither can be taken back, and the two share
+  // the destroy column, so a mistaken Enter lands on whichever the row offers.
   //
   // The dialog opens on Cancel rather than on the confirming side, which is
   // ConfirmDialog's own default: a dialog that destroys something on a
   // reflexive Enter is worse than no dialog, because it trains the reflex.
   function askKill(session) {
     if (!session || !session.running || !validName(session.name)) return
-    killTarget = session
+    ask(session, "kill")
+  }
+
+  function askDelete(session) {
+    if (!session || session.isDefault || session.running) return
+    ask(session, "delete")
+  }
+
+  function ask(session, action) {
+    confirmTarget = session
+    confirmAction = action
     confirmOpen = true
     if (activeCard) activeCard.beginConfirm()
   }
 
-  function closeKill() {
+  function closeConfirm() {
     confirmOpen = false
-    killTarget = null
+    confirmTarget = null
+    confirmAction = ""
     if (activeCard) activeCard.endConfirm()
   }
 
-  function confirmKill() {
-    var session = killTarget
-    closeKill()
-    killSession(session)
+  function confirmPending() {
+    var session = confirmTarget
+    var action = confirmAction
+    closeConfirm()
+    if (action === "kill") killSession(session)
+    else if (action === "delete") removeSession(session)
   }
 
-  function killMessage() {
-    if (!killTarget) return ""
-    return "Kill the server for " + sessionLabel(killTarget)
+  function confirmMessage() {
+    if (!confirmTarget) return ""
+    if (confirmAction === "delete")
+      return "Delete " + sessionLabel(confirmTarget)
+        + "? Everything herdr kept for this session goes with it."
+    return "Kill the server for " + sessionLabel(confirmTarget)
       + "? Nothing running inside it is asked to stop first."
   }
 
@@ -440,7 +462,7 @@ Item {
     if (column === root.columnOpen) { openSession(session); return }
     if (column === root.columnDestroy) {
       if (session.running) askKill(session)
-      else removeSession(session)
+      else askDelete(session)
       return
     }
     var agent = agentAt(cursor)
@@ -736,6 +758,7 @@ Item {
 
   onOpenedChanged: {
     if (opened) {
+      actionError = ""
       refresh()
       // The list may still be the one from the last poll, so place the cursor
       // on what we know now and again when the fresh answer lands.
@@ -806,6 +829,16 @@ Item {
 
   Process {
     id: actionProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(text)
+          root.actionError = data.ok === true ? "" : (data.error || "")
+        } catch (e) {
+          root.actionError = ""
+        }
+      }
+    }
     onExited: function(exitCode) {
       root.pendingName = ""
       // A stopped server disappears from the list, and a freshly opened

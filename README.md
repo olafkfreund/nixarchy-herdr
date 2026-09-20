@@ -71,7 +71,7 @@ that does not answer never delays the rest. Nothing is installed on them.
 | `Enter` / `Space` | Jump to the agent, open the session, or press the button you are on |
 | `o` | Open the session under the cursor |
 | `K` (Shift+k) | Kill that session's server; asks first, with Cancel selected |
-| `x` | Delete a stopped session |
+| `x` | Delete a stopped session; asks first, with Cancel selected |
 | `r` | Refresh |
 | `Esc` | Close |
 
@@ -195,8 +195,10 @@ one colour.
 - **The bin** (or `x`) throws away a session that is already stopped - the
   directory and the state herdr kept in it - which is what clears it out of the
   list for good. It takes the same slot as the skull, because a session is
-  never both running and stopped. The shared session is herdr's own and is
-  never deleted from here.
+  never both running and stopped. It asks first, like the skull: the two share
+  that slot, so a reflexive Enter lands on whichever the row happens to offer,
+  and what herdr kept for the session does not come back. The shared session is
+  herdr's own and is never deleted from here.
 - **`r`** refreshes, and so does a middle click on the bar button.
 - **`a`** and **`n`** do nothing in the bar panel; they belong to the menu.
 - **The pin** (or `p`) takes the panel out of the bar and leaves it on the

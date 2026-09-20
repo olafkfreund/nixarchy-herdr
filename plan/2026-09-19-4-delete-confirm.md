@@ -45,6 +45,11 @@ spec: spec/2026-09-19-4-delete-confirm.md
    destroy column's `else` at `askDelete`.
    → Verify with `grep -rn 'killTarget\|closeKill\|confirmKill\|killMessage'`
    over `*.qml`, which must print nothing.
+   **As implemented:** `askKill` and `askDelete` keep their own guards and
+   both hand off to one `ask(session, action)`, which is the only place that
+   sets `confirmTarget`, `confirmAction`, `confirmOpen` and calls
+   `beginConfirm`. Two copies of that four-line opening would have been the
+   thing that drifts.
 3. `Card.qml`: `onDeleteRequested` and the trash button call `askDelete`; the
    dialog's `confirmText` follows `confirmAction` ("Kill" or "Delete") and its
    message comes from `confirmMessage()`.
