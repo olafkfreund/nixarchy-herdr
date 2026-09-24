@@ -178,6 +178,9 @@ Item {
     var command = [herd.script]
     if (t.host) command.push("--host", t.host)
     command.push("prompt", t.session, t.pane)
+    // C1 controls (U+0080-U+009F) are two bytes in UTF-8, so the script's
+    // byte-wise tr cannot catch them; a terminal still acts on them.
+    text = text.replace(/[\u0080-\u009f]/g, "")
     promptProc.text = text
     promptProc.command = command
     // Closed after each write; a second prompt needs it open again before
