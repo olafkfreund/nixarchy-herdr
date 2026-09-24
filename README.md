@@ -268,6 +268,21 @@ real server.
 
 ## Installing it
 
+**On nixarchy, it is already installed and on.** nixarchy ships this plugin,
+pinned in its flake, and links it into `~/.config/omarchy/plugins/nixarchy.herdr`
+on every rebuild. Updating nixarchy is how you update the plugin. Do not clone
+it there as well: nixarchy never replaces a real directory at a plugin's id, so
+a clone quietly stays on its commit forever, while every rebuild says only
+"is your own directory, not replacing it". If you have one from before, move it
+out of the way and re-run home-manager:
+
+```bash
+mv ~/.config/omarchy/plugins/nixarchy.herdr ~/nixarchy.herdr.clone
+sudo systemctl restart home-manager-$USER.service
+```
+
+**On Omarchy without nixarchy**, clone it into the plugin directory:
+
 ```bash
 git clone https://github.com/olafkfreund/nixarchy-herdr ~/.config/omarchy/plugins/nixarchy.herdr
 omarchy plugin enable nixarchy.herdr
@@ -306,6 +321,12 @@ data script is piped to the host on each call, so nothing is installed there,
 and one shared connection keeps polling to a handshake a minute.
 
 ## Removing it
+
+On nixarchy, turn it off in Setup > Plugins, and it stays off. To stop nixarchy
+installing it at all, set `programs.nixarchy.defaultPlugins.herdr = false;` and
+rebuild. `omarchy plugin remove` would only last until the next rebuild.
+
+On Omarchy without nixarchy:
 
 ```bash
 omarchy plugin disable nixarchy.herdr
