@@ -132,8 +132,8 @@ there:
 
 ## What it shows
 
-The bar carries the number of running servers, on a badge sitting in the top
-right corner of the icon. It turns red when an agent is blocked and waiting on
+The bar carries the number of running servers, on a badge sitting in the
+bottom-right corner of the icon. It turns red when an agent is blocked and waiting on
 an answer, green when work finished while you were looking elsewhere, and amber
 while something is still running. When every agent is idle there is nothing to
 say, so the badge goes away and the icon stands on its own.
@@ -180,7 +180,10 @@ one colour.
 - **Click a row** (or `Enter`, or `o`) to open that session. A session shows at
   most one window, because two windows on one session mirror each other, so
   this focuses the window it already has, wherever it is, and only opens a new
-  one when there is none. Without a window one is started, in foot.
+  one when there is none. Without a window one is started, in foot. A terminal
+  that runs all its windows in one process, like ghostty or footclient, cannot
+  say which of them holds the session, so there "open" starts a new window
+  rather than guessing.
 - **Click one of the agent lines** to land on that agent rather than on
   whatever the session was last showing: its pane is focused inside the server
   first, then the window comes up. That also marks a finished agent as seen, so
@@ -224,8 +227,9 @@ difference between a session worth starting back up and a name left over from
 an afternoon, and it is not something the word "stopped" can tell you. A row
 that saved nothing worth naming says **nothing saved**.
 
-The list refreshes every three seconds while the panel is open and every twenty
-seconds when it is closed.
+The list refreshes every three seconds while the panel is open. Closed, it
+refreshes every five seconds while an agent is working, waiting on you or
+finished and unseen, and every twenty seconds when everything is idle.
 
 ## Pinning it
 
@@ -297,7 +301,7 @@ while the menu is open. No file means this machine only.
 a session's server.
 
 **Each remote host** needs `bash`, `jq` and `herdr` on the ssh user's `PATH`,
-and a key that logs in without a prompt: every call uses `BatchMode=yes`. The
+plus `ss`, `grep`, `awk` and a readable `/proc` for the kill button, and a key that logs in without a prompt: every call uses `BatchMode=yes`. The
 data script is piped to the host on each call, so nothing is installed there,
 and one shared connection keeps polling to a handshake a minute.
 
