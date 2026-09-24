@@ -176,6 +176,7 @@ two=$("$script" list)
 fake_windows "${bg[-1]}" 1
 one=$("$script" list)
 stop_bg
+# shellcheck disable=SC2016 # $two and $one are jq variables
 check "6 one process, two windows" jq -en --argjson two "$two" --argjson one "$one" \
   '$two.sessions[0].windowAddress == "" and $one.sessions[0].windowAddress == "0x10"' ||
   printf '  two: %s, one: %s\n' "$(jq -c '[.sessions[] | .windowAddress]' <<<"$two")" \

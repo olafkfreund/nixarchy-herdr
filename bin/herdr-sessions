@@ -109,7 +109,7 @@ valid_pane_id() {
 # there sets its own mode.
 private_dir() {
   local dir="$1" owner
-  mkdir -p -m 700 -- "$dir" 2>/dev/null
+  mkdir -p -- "$dir" 2>/dev/null
   [[ -d $dir && ! -L $dir ]] || return 1
   owner="$(stat -c '%u' -- "$dir" 2>/dev/null)" || return 1
   [[ $owner == "$(id -u)" ]] || return 1
@@ -266,12 +266,12 @@ window_map() {
     args_of[$pid]=$args
   done < <(pgrep -af herdr 2>/dev/null)
 
-  declare -A seen=()
+  declare -A emitted=()
 
   emit() {
     local session="$1" window="$2"
-    [[ -n ${seen[$session]-} ]] && return 0
-    seen[$session]=1
+    [[ -n ${emitted[$session]-} ]] && return 0
+    emitted[$session]=1
     printf '%s\t%s\n' "$session" "$window"
   }
 
