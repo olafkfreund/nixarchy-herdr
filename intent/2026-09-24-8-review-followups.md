@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 8
 author: olafkfreund
 ---
@@ -125,6 +125,14 @@ Findings rated low are listed under open questions.
 - **Merge with a merge commit.**
 
 ## Open questions
+
+Resolved at approval (2026-09-24), with the proposed defaults:
+
+1. Of the low findings, only the README facts (badge corner, 5 s refresh)
+   are added.
+2. Upstream drift gets its own task later.
+3. The spec chooses the remote-cancel approach.
+
 
 1. **The low findings.** Should any of these join this task?
    - A directory with control characters breaks `new` on a fish login shell.
