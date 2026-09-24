@@ -46,7 +46,11 @@ case "$1 ${2-}" in
     sleep "${FAKE_SNAPSHOT_SLEEP:-0}" >/dev/null 2>&1
     pad=$(head -c "${FAKE_SNAPSHOT_BYTES:-0}" /dev/zero | tr '\0' x)
     printf '{"result":{"snapshot":{"version":"fake","pad":"%s","workspaces":[{"workspace_id":"ws1","label":"proj"}],"agents":[{"agent_status":"idle","pane_id":"w1:p1","workspace_id":"ws1","terminal_title":"fake agent"}]}}}\n' "$pad" ;;
-  "agent prompt") exit "${FAKE_PROMPT_RC:-0}" ;;
+  "agent prompt")
+    printf 'prompt-pid %s\n' "$$" >> "$FAKE_LOG"
+    # exec, so the pid logged is the one waiting and a TERM to it ends the wait.
+    [[ -z ${FAKE_PROMPT_SLEEP-} ]] || exec sleep "$FAKE_PROMPT_SLEEP" >/dev/null 2>&1
+    exit "${FAKE_PROMPT_RC:-0}" ;;
   "agent get")
     # The pad goes first, so an answer cut short at a cap has no status left.
     pad=$(head -c "${FAKE_AGENT_GET_BYTES:-0}" /dev/zero | tr '\0' x)
@@ -58,13 +62,16 @@ FAKE
 
 # The fake ssh records what it was asked and answers nothing, which is an
 # unreachable host as far as the script can tell. With FAKE_SSH_RUN set it runs
-# the remote command here instead, against the fake herdr.
+# the remote command here instead, against the fake herdr. FAKE_SSH_PIPE as
+# well hands its output to a reader that takes one byte and leaves, which is
+# what sshd closing the command's stdout looks like from the other end.
 cat > "$tmp/bin/ssh" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$@" >> "$FAKE_LOG"
 [[ -n ${FAKE_SSH_RUN-} ]] || exit 0
 while [[ $# -gt 0 && $1 != -- ]]; do shift; done
 shift 2
+[[ -z ${FAKE_SSH_PIPE-} ]] || { bash -c "$*" | head -c 1 >/dev/null; exit; }
 exec bash -c "$*"
 FAKE
 
@@ -89,7 +96,7 @@ reset() {
   : > "$FAKE_LOG"
   echo "[]" > "$FAKE_CLIENTS"
   unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS \
-    FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN
+    FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN FAKE_SSH_PIPE FAKE_PROMPT_SLEEP
 }
 
 # fake_client <args...>: a live process with that command line, for the window
@@ -209,6 +216,28 @@ cache_left_alone() {
 check "9 demo leaves the cache alone" cache_left_alone ||
   printf '  got: %.200s\n  left: %s\n' "$out" "$(ls -l "$cache")"
 "$script" demo off >/dev/null
+
+# Case 10: a remote prompt whose connection is gone stops on the remote host
+# too, rather than waiting on the agent there for minutes.
+reset
+printf hi | FAKE_SSH_RUN=1 FAKE_SSH_PIPE=1 FAKE_PROMPT_SLEEP=60 \
+  "$script" --host h1 prompt s1 w1:p1 >/dev/null 2>&1 &
+bg+=($!)
+pid=""
+for ((i = 0; i < 50; i++)); do
+  [[ -n $pid ]] || pid=$(awk '$1 == "prompt-pid" { print $2 }' "$FAKE_LOG")
+  [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null && break
+  sleep 0.1
+done
+# shellcheck disable=SC2329 # called through check
+prompt_gone() {
+  [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null
+}
+check "10 cancelled remote prompt" prompt_gone ||
+  printf '  prompt pid %s still running after 5s\n' "${pid:-(never started)}"
+# A failing run's prompt is ended here, or it would outlive the suite.
+[[ -z $pid ]] || kill "$pid" 2>/dev/null
+stop_bg
 
 # Case 11: a remote agent answering with megabytes is read only up to its cap.
 # Cut short, the answer has no status, and with nothing on screen either the

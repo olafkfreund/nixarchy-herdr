@@ -749,10 +749,26 @@ cmd_prompt() {
     ssh_options
     # The remote side gets its own ceiling as well: a dropped connection does
     # not stop a command waiting there on its own.
+    #
+    # Nor does killing ssh here: the command on the other end never hears
+    # about it. So the wait runs in the background there, and a newline is
+    # written once a second while it lasts. Once this end is gone, sshd has
+    # closed that stdout, the write fails, and the prompt is sent TERM, which
+    # `timeout` passes on to herdr. SIGPIPE is ignored so the failed write
+    # returns an error instead of killing the loop. `wait` hands back herdr's
+    # own exit code. The newlines land in /dev/null on this side.
+    #
+    # One line, no newlines in it: `printf %q` would turn those into $'...',
+    # which not every login shell on the other end reads.
+    local remote
     # shellcheck disable=SC2016 # expanded by the remote bash, not here
+    {
+      remote='t=$(cat); timeout 300 "$@" "$t" '"${wait_for[*]}"' & p=$!; trap "" PIPE; '
+      remote+='while kill -0 "$p" 2>/dev/null; do '
+      remote+='printf "\n" 2>/dev/null || { kill -TERM "$p"; break; }; sleep 1; done; wait "$p"'
+    }
     timeout 305 ssh "${SSH_OPTS[@]}" -- "$HOST" \
-      "$(printf '%q ' bash -c 't=$(cat); timeout 300 "$@" "$t" '"${wait_for[*]}" \
-        _ "${base[@]}" agent prompt "$pane")" <<<"$text" >/dev/null 2>&1 &
+      "$(printf '%q ' bash -c "$remote" _ "${base[@]}" agent prompt "$pane")" <<<"$text" >/dev/null 2>&1 &
   else
     timeout 300 "${base[@]}" agent prompt "$pane" "$text" "${wait_for[@]}" </dev/null >/dev/null 2>&1 &
   fi
