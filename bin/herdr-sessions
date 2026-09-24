@@ -135,7 +135,12 @@ valid_host() {
 # handshake a minute. A second argument raises the 8s ceiling for the one
 # call that waits on an agent.
 ssh_options() {
-  SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=4)
+  # Nothing is forwarded, whatever ~/.ssh/config says for that host: the
+  # remote side runs this script and herdr, and needs neither the agent, the
+  # display nor a port, nor a local command run on connect.
+  SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=4
+            -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes
+            -o PermitLocalCommand=no)
   if [[ -n ${XDG_RUNTIME_DIR-} && -d ${XDG_RUNTIME_DIR-} ]]; then
     SSH_OPTS+=(-o ControlMaster=auto -o ControlPersist=60
                -o "ControlPath=$XDG_RUNTIME_DIR/nixarchy-herdr-%C")

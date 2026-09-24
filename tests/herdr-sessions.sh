@@ -104,4 +104,16 @@ out=$(printf 'a\033[201~b\rc\177d' | "$script" prompt s1 w1:p1)
 check "4 control characters" grep -qFx 'a[201~bcd' "$FAKE_LOG" ||
   printf '  logged: %q\n' "$(cat "$FAKE_LOG")"
 
+# Case 5: ssh is told not to forward anything. The fake answers nothing, so
+# the list itself fails as unreachable; only what ssh was handed is checked.
+reset
+out=$("$script" --host h1 list)
+# shellcheck disable=SC2329 # called through check
+ssh_told_no_forwarding() {
+  grep -qFx ForwardAgent=no "$FAKE_LOG" && grep -qFx PermitLocalCommand=no "$FAKE_LOG" &&
+    [[ $out == *unreachable* ]]
+}
+check "5 ssh options" ssh_told_no_forwarding ||
+  printf '  got: %.200s\n  logged: %q\n' "$out" "$(cat "$FAKE_LOG")"
+
 exit "$failed"
