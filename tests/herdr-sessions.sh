@@ -89,4 +89,19 @@ check "2 stuck server" jq -e --argjson took "$took" \
   '$took <= 8 and .sessions[0].name == "s1"' <<<"$out" ||
   printf '  took %ss, got: %.200s\n' "$took" "$out"
 
+# Case 3: herdr refusing the prompt is a failure, not a success with whatever
+# the screen happens to show.
+reset
+out=$(printf hi | FAKE_PROMPT_RC=1 FAKE_AGENT_STATUS=blocked "$script" prompt s1 w1:p1)
+check "3 prompt refused" jq -e '.ok == false
+  and (.error | contains("waiting on a question"))' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+# Case 4: control characters never reach the agent's terminal; the fake logs
+# each argument on its own line, so the prompt text is one whole line.
+reset
+out=$(printf 'a\033[201~b\rc\177d' | "$script" prompt s1 w1:p1)
+check "4 control characters" grep -qFx 'a[201~bcd' "$FAKE_LOG" ||
+  printf '  logged: %q\n' "$(cat "$FAKE_LOG")"
+
 exit "$failed"

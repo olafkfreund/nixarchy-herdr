@@ -716,6 +716,10 @@ cmd_prompt() {
 
   local text
   text=$(head -c 16384)
+  # The text is typed into the agent's terminal, so a control character in it
+  # is a keystroke: an escape sequence could end a bracketed paste early, and a
+  # carriage return would submit half of it. Tab and newline are kept.
+  text=$(printf '%s' "$text" | tr -d '\000-\010\013-\037\177')
   [[ -n ${text//[[:space:]]/} ]] || die "nothing to send"
 
   local -a base=(herdr)
@@ -726,7 +730,7 @@ cmd_prompt() {
   # substitution, so a TERM from the menu (Esc, or the menu closing) reaches
   # it: `timeout` passes the signal on to herdr. In a `$(...)` it would sit in
   # a subshell the trap cannot see, and keep waiting on the agent for minutes.
-  local child
+  local child rc=0
   if [[ -n $HOST ]]; then
     local -a SSH_OPTS
     ssh_options
@@ -741,8 +745,11 @@ cmd_prompt() {
   fi
   child=$!
   trap 'kill -TERM "$child" 2>/dev/null; exit 143' TERM INT HUP
-  wait "$child" || true
+  wait "$child" || rc=$?
   trap - TERM INT HUP
+  # 124 is the timeout running out, which still ends in reading the screen.
+  # 255 is ssh itself failing, so there is no agent to ask.
+  (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
 
   local agent screen
   if [[ -n $HOST ]]; then
@@ -759,6 +766,12 @@ cmd_prompt() {
   local status
   status=$(printf '%s' "$agent" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || true
   [[ -n $status ]] || [[ -n $screen ]] || die "could not reach that agent"
+  # Any other exit is herdr refusing the prompt. The screen would show
+  # whatever was there before, which reads as an answer when nothing was sent.
+  if (( rc != 0 && rc != 124 )); then
+    [[ $status == blocked ]] && die "the agent is waiting on a question; nothing was sent"
+    die "herdr did not start the prompt (agent is ${status:-unknown})"
+  fi
   jq -cn --arg status "${status:-timeout}" --arg output "$screen" \
     '{ok: true, status: $status, output: $output}'
 }
