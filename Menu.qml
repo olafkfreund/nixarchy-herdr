@@ -417,6 +417,15 @@ Item {
             if (promptConfirm.handleKey(event)) event.accepted = true
           }
 
+          // Swallows every click, hover and scroll while the dialog is up, so
+          // nothing underneath it can be hit while it is asking.
+          MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            hoverEnabled: true
+            onWheel: function (wheel) { wheel.accepted = true }
+          }
+
           ConfirmDialog {
             id: promptConfirm
             anchors.fill: parent
