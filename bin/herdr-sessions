@@ -464,13 +464,16 @@ cmd_list() {
        | (($snap.workspaces // [])
           | map({key: (.workspace_id // ""), value: (.label // "")})
           | from_entries) as $wslabels
-       # Tab names are joined the same way. A tab nobody named comes back with
-       # its number as the label ("1"), which is not a name worth printing
-       # after every workspace, so those join as empty.
+       # Tab names are joined the same way. A tab nobody named comes back
+       # either with its number as the label ("1") or with the title herdr gives it,
+       # "<number> · <what runs in it>". Neither is a name worth printing
+       # after every workspace, so both join as empty.
        | (($snap.tabs // [])
           | map({key: (.tab_id // ""),
-                 value: (if (.label // "") == ((.number // "") | tostring)
-                         then "" else (.label // "") end)})
+                 value: ((.label // "") as $l
+                         | if $l == ((.number // "") | tostring)
+                              or ($l | test("^[0-9]+ · "))
+                           then "" else $l end)})
           | from_entries) as $tablabels
        | {
            name: $name,

@@ -270,4 +270,17 @@ out=$(FAKE_TABS='[{"tab_id":"w1:t1","label":"review","number":1},
 check "12 tab names" jq -e '[.sessions[0].agentList[] | .tab] == ["review", "", ""]' <<<"$out" ||
   printf '  got: %s\n' "$(jq -c '[.sessions[0].agentList[]? | .tab]' <<<"$out")"
 
+# Case 13: herdr titles a tab itself as "<number> · <what runs in it>", which
+# nobody named either, so it comes out empty too. A real name still shows.
+reset
+out=$(FAKE_TABS='[{"tab_id":"w1:t1","label":"1 · claude › Code review","number":1},
+                   {"tab_id":"w1:t2","label":"12 · x","number":12},
+                   {"tab_id":"w1:t3","label":"release","number":3}]' \
+  FAKE_AGENTS='[{"agent_status":"idle","pane_id":"w1:p1","tab_id":"w1:t1","terminal_title":"a1"},
+                {"agent_status":"idle","pane_id":"w1:p2","tab_id":"w1:t2","terminal_title":"a2"},
+                {"agent_status":"idle","pane_id":"w1:p3","tab_id":"w1:t3","terminal_title":"a3"}]' \
+  "$script" list)
+check "13 auto-titled tabs" jq -e '[.sessions[0].agentList[] | .tab] == ["", "", "release"]' <<<"$out" ||
+  printf '  got: %s\n' "$(jq -c '[.sessions[0].agentList[]? | .tab]' <<<"$out")"
+
 exit "$failed"
