@@ -330,11 +330,14 @@ snapshot_for() {
   local name="$1" is_default="$2"
   local out
   # `|| true` because the cap in front of this can close the pipe on the
-  # server, and a SIGPIPE there is a bounded read rather than a failure.
+  # server, and a SIGPIPE there is a bounded read rather than a failure. The
+  # timeout is for a server that takes the connection and never answers: its
+  # row falls back like any other that did not reply, instead of stalling
+  # every refresh behind it.
   if [[ $is_default == true ]]; then
-    out=$(herdr api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(timeout 2 herdr api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   else
-    out=$(herdr --session "$name" api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(timeout 2 herdr --session "$name" api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   fi
   [[ -n $out ]] || return 1
   # One oversized server is skipped rather than allowed to take the list down:
@@ -346,7 +349,8 @@ snapshot_for() {
 
 cmd_list() {
   local sessions_json
-  sessions_json=$(herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
+  # Bounded in time as well as size: an empty answer is "could not reach".
+  sessions_json=$(timeout 4 herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
   [[ -n $sessions_json ]] || die "could not reach herdr"
   over_byte_cap "$sessions_json" "$SESSIONS_BYTE_CAP" && die "session list too large to read safely"
 

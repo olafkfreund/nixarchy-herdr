@@ -78,4 +78,15 @@ check "1 big snapshot" jq -e '.sessions[0].name == "s1"
   and .sessions[0].agentList[0].title == "fake agent"' <<<"$out" ||
   printf '  got: %.200s\n' "$out"
 
+# Case 2: a server that never answers its snapshot does not hold the list up.
+# The outer timeout only stops a failing run from hanging the suite.
+reset
+start=$SECONDS
+out=$(FAKE_SNAPSHOT_SLEEP=30 timeout 20 "$script" list)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "2 stuck server" jq -e --argjson took "$took" \
+  '$took <= 8 and .sessions[0].name == "s1"' <<<"$out" ||
+  printf '  took %ss, got: %.200s\n' "$took" "$out"
+
 exit "$failed"
