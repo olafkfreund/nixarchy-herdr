@@ -49,11 +49,23 @@ Item {
   // borrowing the accent for it would leave a finished agent looking exactly
   // like a working one - which is the distinction this widget exists to draw.
   // So this one colour is picked rather than themed.
-  readonly property color finished: "#5FA46B"
+  //
   // Working is amber for the same reason, and because it used to borrow the
   // accent: on a theme whose accent is red or green, "busy" was indistinguish-
   // able from "needs you" or "finished" - the two the badge exists to separate.
-  readonly property color working: "#D6A84B"
+  //
+  // A theme that wants to say otherwise can, through `done` and `working`
+  // under [herdr] in its shell.toml. The values go through the same
+  // flatColor the shell uses for its own roles, so a role name like "accent"
+  // or an eight-digit hex means what it means everywhere else, and a typo
+  // lands on the fallback instead of on black.
+  function themeColor(key, fallback) {
+    var value = Color.pick(key, "")
+    return value ? Color.flatColor(value, fallback) : fallback
+  }
+  readonly property color finished: themeColor("herdr.done", "#5FA46B")
+  readonly property color working: themeColor("herdr.working", "#D6A84B")
+  readonly property color workingForeground: themeColor("herdr.working", root.accent)
 
   property var sessions: []
   // Sessions this machine answered with, kept apart from the remote ones so a
@@ -639,10 +651,22 @@ Item {
     return session.agentList || []
   }
 
+  // The address of the work: the workspace it sits in, then the tab inside
+  // that workspace. Either half can be empty - herdr only hands back a label
+  // a tab or workspace was given - so the line is whichever parts exist, and
+  // nothing at all when neither does.
+  function agentPlace(agent) {
+    if (!agent) return ""
+    var parts = []
+    if (agent.workspace) parts.push(agent.workspace)
+    if (agent.tab) parts.push(agent.tab)
+    return parts.join("  ·  ")
+  }
+
   function agentColor(status) {
     if (status === "blocked") return root.urgent
     if (status === "done") return root.finished
-    if (status === "working") return root.accent
+    if (status === "working") return root.workingForeground
     return Qt.darker(root.foreground, 1.9)
   }
 
@@ -673,14 +697,14 @@ Item {
     if (!session) return root.foreground
     if ((session.blocked || 0) > 0) return root.urgent
     if ((session.done || 0) > 0) return root.finished
-    return root.accent
+    return root.workingForeground
   }
 
   function statusColor(session) {
     if (!session || !session.running) return Qt.darker(root.foreground, 2.2)
     if ((session.blocked || 0) > 0) return root.urgent
     if ((session.done || 0) > 0) return root.finished
-    if ((session.working || 0) > 0) return root.accent
+    if ((session.working || 0) > 0) return root.workingForeground
     return Qt.darker(root.foreground, 1.7)
   }
 

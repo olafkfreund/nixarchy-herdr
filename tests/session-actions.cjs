@@ -128,3 +128,30 @@ console.log("PASS: a delete herdr refused keeps herdr's reason");
   assert.equal(context.hostState.h1, 'ok', 'a late answer must not be applied while closed');
 }
 console.log('PASS: no host polling while the menu is closed');
+
+// Where an agent sits: the workspace, then the tab, whichever exist.
+{
+  for (const name of ['agentPlace', 'themeColor']) {
+    const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
+    assert.ok(match, `Missing function: ${name}`);
+    vm.runInContext(match[0], context);
+  }
+  assert.equal(context.agentPlace({ workspace: 'w', tab: 't' }), 'w  ·  t');
+  assert.equal(context.agentPlace({ workspace: 'w' }), 'w');
+  assert.equal(context.agentPlace({ tab: 't' }), 't');
+  assert.equal(context.agentPlace({}), '');
+  assert.equal(context.agentPlace(null), '');
+}
+console.log('PASS: agentPlace names the workspace and tab that exist');
+
+// A theme colour only goes through flatColor when the theme sets one.
+{
+  const calls = [];
+  context.Color = { pick: () => '', flatColor: (...args) => { calls.push(args); return 'flat'; } };
+  assert.equal(context.themeColor('herdr.done', '#5FA46B'), '#5FA46B');
+  assert.equal(calls.length, 0, 'flatColor must not be called when the theme sets nothing');
+  context.Color.pick = () => 'accent';
+  assert.equal(context.themeColor('herdr.done', '#5FA46B'), 'flat');
+  assert.deepEqual(calls, [['accent', '#5FA46B']]);
+}
+console.log('PASS: themeColor falls back unless the theme names a colour');

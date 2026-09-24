@@ -16,7 +16,9 @@ a keybind, in the Omarchy shell. Across machines, not just this one.
 
 Built on [jankeesvw/omarchy-herdr](https://github.com/jankeesvw/omarchy-herdr)
 (MIT), which is where the bar widget, its states and its pinned panel come
-from. The herdr logo is from [herdrdev/herdr](https://github.com/herdrdev/herdr)
+from. Tab names on agent rows and theme colours come from its PRs
+[#9](https://github.com/jankeesvw/omarchy-herdr/pull/9) and
+[#10](https://github.com/jankeesvw/omarchy-herdr/pull/10). The herdr logo is from [herdrdev/herdr](https://github.com/herdrdev/herdr)
 (Apache-2.0, see [assets/LICENSE-herdr](assets/LICENSE-herdr)) and is used to
 identify herdr.
 
@@ -144,7 +146,8 @@ Each row in the panel is one session:
 - the projects open inside it, taken from the workspace labels
 - how many agents it holds, and what the most urgent of them is up to
 - what every one of those agents is doing, from its terminal title, with its
-  own status dot beside it. All of them, however many and wherever herdr keeps
+  own status dot beside it. The line above the title names where it sits: its
+  workspace, then its tab if you gave the tab a name. All of them, however many and wherever herdr keeps
   them: a pane in a second tab counts the same as one sitting in front of you.
   Each of those lines is its own way in
 - a dot in the session's colour, taking the state of its loudest agent
@@ -174,6 +177,26 @@ Both **needs you** and **done** are written bold and in colour, along with the t
 
 Waiting beats finished beats busy, wherever a session has to be summed up in
 one colour.
+
+## Theme colours
+
+A theme can set the done and working colours in its `shell.toml`:
+
+```toml
+[herdr]
+done = "#006800"
+working = "#6f5500"
+```
+
+Those two are Modus Operandi's. `done` colours the finished labels, dots, row
+washes and the count badge; `working` colours the working labels, dots and the
+count badge. Both follow a theme switch. Pick colours that stay readable on the
+panel background and behind the badge's number.
+
+Without them, the colours stay as they were: green for done, amber for the
+working badge, and the theme's accent for working labels and dots. Blocked
+keeps the theme's urgent colour either way. The same entries in
+`~/.config/omarchy/shell.toml` override whichever theme is selected.
 
 ## What it does
 

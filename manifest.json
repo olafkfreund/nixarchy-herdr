@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nixarchy.herdr",
   "name": "Herdr",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "olafkfreund",
   "description": "herdr sessions and the agents inside them, here and on other machines: a keyboard menu to land on an agent, start a session or prompt one, and a bar widget with attention colours",
   "homepage": "https://github.com/olafkfreund/nixarchy-herdr",
