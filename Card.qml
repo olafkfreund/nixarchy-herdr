@@ -245,6 +245,10 @@ PanelKeyCatcher {
         required property var modelData
         required property int index
 
+        Accessible.role: Accessible.ListItem
+        // sessionLabel already names the host, when there is one.
+        Accessible.name: panel.sessionLabel(modelData) + ", " + panel.countLabel(modelData)
+
         // The session is lit whenever the cursor is anywhere inside it, so
         // the action buttons on the right stay reachable while you walk
         // the agents underneath.
@@ -391,6 +395,10 @@ PanelKeyCatcher {
                 id: agentRow
                 required property var modelData
                 required property int index
+
+                Accessible.role: Accessible.ListItem
+                Accessible.name: panel.cleanTitle(agentRow.modelData.title) + ", "
+                                 + panel.agentNote(agentRow.modelData.status)
                 width: agentColumn.width
 
                 // The slack around the text, on both sides of it. It used to

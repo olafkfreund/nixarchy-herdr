@@ -55,10 +55,15 @@ events.
 **F7. Accessibility,** in `Card.qml`.
 
 - **Session row:** `Accessible.role: Accessible.ListItem`; `Accessible.name:`
-  `sessionLabel(modelData)`, plus `" on " + host` if there is one, plus `", "
-  + countLabel(modelData)`.
+  `sessionLabel(modelData) + ", " + countLabel(modelData)`.
 - **Agent row:** `Accessible.role: Accessible.ListItem`; `Accessible.name:`
-  `cleanTitle(title) + ", " + (agentNote(status) || status)`.
+  `cleanTitle(title) + ", " + agentNote(status)`.
+- **Correction (2026-09-24, during U2):**
+  - `sessionLabel()` already prefixes the host (`host · label`), so the
+    planned `" on " + host` would have read the host twice.
+  - `agentNote()` never returns `""`, so the `|| status` fallback could never
+    fire.
+  - Both are dropped.
 
 **F8. CI** in `.github/workflows/ci.yml`.
 
