@@ -57,10 +57,11 @@ printf '#!/bin/sh\necho "[]"\n' > "$tmp/bin/hyprctl"
 chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl"
 
 failed=0
-# check <case> <command...>: the command's status is the verdict.
+# check <case> <command...>: the command's status is the verdict, its output
+# is dropped.
 check() {
   local name="$1"; shift
-  if "$@"; then echo "ok $name"; else echo "FAIL $name"; failed=1; fi
+  if "$@" >/dev/null 2>&1; then echo "ok $name"; else echo "FAIL $name"; failed=1; return 1; fi
 }
 
 # Each case starts with a clean log and the fake's defaults.
@@ -68,5 +69,13 @@ reset() {
   : > "$FAKE_LOG"
   unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS
 }
+
+# Case 1: a snapshot bigger than one exec argument may be (128 KB on Linux)
+# still lists, with its agents.
+reset
+out=$(FAKE_SNAPSHOT_BYTES=200000 "$script" list)
+check "1 big snapshot" jq -e '.sessions[0].name == "s1"
+  and .sessions[0].agentList[0].title == "fake agent"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
 
 exit "$failed"
