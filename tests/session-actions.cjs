@@ -10,7 +10,7 @@ vm.createContext(context);
 for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent',
                     'removeSession', 'killSession', 'askKill', 'askDelete', 'ask',
                     'closeConfirm', 'confirmPending', 'sessionKey', 'agentKey', 'agentWants',
-                    'blinking', 'updateAttention']) {
+                    'blinking', 'updateAttention', 'refresh', 'applyHostPayload']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
   assert.ok(match, `Missing function: ${name}`);
   vm.runInContext(match[0], context);
@@ -111,3 +111,20 @@ console.log('PASS: every route that deletes a session asks first');
   assert.match(data.error, /no such session: gone/);
 }
 console.log("PASS: a delete herdr refused keeps herdr's reason");
+
+// A closed menu reaches no other machine. The poll timer stopped, but the
+// settle timer after an action still called refresh(), which started an ssh
+// per host, and an answer that landed after closing was still applied.
+{
+  let started = 0;
+  Object.assign(context, {
+    remote: true, opened: false, listProc: { running: true },
+    hostPolls: { count: 1, objectAt: () => ({ running: false, start() { started++; } }) },
+    hostSessions: {}, hostState: { h1: 'ok' }, rebuild() {},
+  });
+  context.refresh();
+  assert.equal(started, 0, 'refresh must not poll hosts while the menu is closed');
+  context.applyHostPayload('h1', '');
+  assert.equal(context.hostState.h1, 'ok', 'a late answer must not be applied while closed');
+}
+console.log('PASS: no host polling while the menu is closed');

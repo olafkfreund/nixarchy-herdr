@@ -154,7 +154,10 @@ Item {
       listProc.command = [root.script, "list"]
       listProc.running = true
     }
-    if (!remote) return
+    // Other machines are asked only while the menu is open. The settle timer
+    // after an action lands here too, and would otherwise start an ssh per
+    // host behind a closed menu.
+    if (!remote || !opened) return
     // One process per host, and a host whose last poll is still out is
     // skipped rather than queued: an unreachable one costs the script's full
     // 8s ceiling, which is longer than the poll interval.
@@ -210,6 +213,9 @@ Item {
   }
 
   function applyHostPayload(host, text) {
+    // An answer that lands after the menu closed is dropped: the dots and the
+    // title are not on screen, and the next open asks again.
+    if (remote && !opened) return
     // New objects every time: assigning the same object back is not a change
     // to QML, and the title line would keep the state from before it answered.
     var next = {}, state = {}, key
@@ -773,6 +779,11 @@ Item {
       column = root.columnRow
       cursorPlaced = false
     } else {
+      // Closing stops every ssh call, including the ones still out.
+      for (var i = 0; i < hostPolls.count; i++) {
+        var poll = hostPolls.objectAt(i)
+        if (poll) poll.running = false
+      }
       cursor = -1
       column = root.columnRow
       cursorPlaced = false

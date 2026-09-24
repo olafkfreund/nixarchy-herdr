@@ -104,18 +104,16 @@ valid_pane_id() {
 
 # A directory someone else can write to is a directory that can hand this
 # script a symlink on the name it is about to write. Refuse rather than repair
-# what is not ours, and repair the rest unconditionally: a mode set once says
-# nothing about what a previous version left inside.
+# what is not ours. Only the directory itself is repaired: whatever else is in
+# it is not this script's to delete or re-mode, and the one file it writes
+# there sets its own mode.
 private_dir() {
   local dir="$1" owner
-  mkdir -p -m 700 -- "$dir" 2>/dev/null
+  mkdir -p -- "$dir" 2>/dev/null
   [[ -d $dir && ! -L $dir ]] || return 1
   owner="$(stat -c '%u' -- "$dir" 2>/dev/null)" || return 1
   [[ $owner == "$(id -u)" ]] || return 1
   chmod 700 -- "$dir" 2>/dev/null || return 1
-  find "$dir" -mindepth 1 -maxdepth 1 ! -type f -exec rm -rf -- {} + 2>/dev/null
-  find "$dir" -mindepth 1 -maxdepth 1 -type f -exec chmod 600 -- {} + 2>/dev/null
-  return 0
 }
 
 readable_file() {
@@ -242,32 +240,38 @@ window_map() {
   # single window could decide how much this costs.
   over_byte_cap "$clients" "$WINDOWS_BYTE_CAP" && return 0
 
+  # Only a process that owns exactly one window is matched. A terminal that
+  # serves every window from one process (ghostty, footclient) cannot say which
+  # of them is showing herdr, and focusing the wrong one is worse than opening
+  # a new one. Foot, which the launcher uses, is one process per window.
   declare -A window_of_pid=()
   local pid address workspace
   while IFS=$'\t' read -r pid address workspace; do
     [[ -n $pid && -n $address ]] || continue
     window_of_pid[$pid]=$address$'\t'$workspace
   done < <(printf '%s' "$clients" |
-    jq -r '.[] | select(.pid > 0)
-           | "\(.pid)\t\(.address)\t\(.workspace.name // "")"' 2>/dev/null)
+    jq -r '[.[] | select(.pid > 0)] | group_by(.pid) | map(select(length == 1) | .[0])
+           | .[] | "\(.pid)\t\(.address)\t\(.workspace.name // "")"' 2>/dev/null)
 
   ((${#window_of_pid[@]})) || return 0
 
   # Only the herdr processes are read in. Reading every command line on the
   # machine into an array cost more than every other step in this script put
   # together, and all but a handful of those lines never mention herdr.
+  # pgrep rather than ps: it reads the whole of /proc/<pid>/cmdline, where ps
+  # cuts the line at COLUMNS and can drop the --session off the end.
   declare -A args_of=()
   while read -r pid args; do
     [[ $pid =~ ^[0-9]+$ ]] || continue
     args_of[$pid]=$args
-  done < <(ps -eo pid=,args= 2>/dev/null | grep -E 'her[d]r')
+  done < <(pgrep -af herdr 2>/dev/null)
 
-  declare -A seen=()
+  declare -A emitted=()
 
   emit() {
     local session="$1" window="$2"
-    [[ -n ${seen[$session]-} ]] && return 0
-    seen[$session]=1
+    [[ -n ${emitted[$session]-} ]] && return 0
+    emitted[$session]=1
     printf '%s\t%s\n' "$session" "$window"
   }
 
@@ -285,7 +289,9 @@ window_map() {
     read -r -a words <<<"${1-}"
     local i j name host
     for ((i = 0; i < ${#words[@]}; i++)); do
-      [[ ${words[i]##*/} == herdr ]] || continue
+      # The command itself, by name or from a bin directory; a file that only
+      # happens to be called herdr, like `vim ~/src/herdr`, is not.
+      [[ ${words[i]} == herdr || ${words[i]} == */bin/herdr ]] || continue
       # `herdr server` is the background process, not a window's client.
       [[ ${words[i + 1]-} == server ]] && return 1
       name=default
@@ -689,7 +695,9 @@ cmd_new() {
   if [[ -n $HOST && -n $dir ]]; then
     local i running=""
     for ((i = 0; i < 20; i++)); do
+      # Capped like the local list: the other host decides how much it sends.
       running=$(ssh_run "herdr session list --json" </dev/null 2>/dev/null |
+        head -c "$((SESSIONS_BYTE_CAP + 1))" |
         jq -r --arg name "$name" '.sessions[]? | select(.name == $name) | .running' 2>/dev/null) || true
       [[ $running == true ]] && break
       sleep 0.5
@@ -741,10 +749,26 @@ cmd_prompt() {
     ssh_options
     # The remote side gets its own ceiling as well: a dropped connection does
     # not stop a command waiting there on its own.
+    #
+    # Nor does killing ssh here: the command on the other end never hears
+    # about it. So the wait runs in the background there, and a newline is
+    # written once a second while it lasts. Once this end is gone, sshd has
+    # closed that stdout, the write fails, and the prompt is sent TERM, which
+    # `timeout` passes on to herdr. SIGPIPE is ignored so the failed write
+    # returns an error instead of killing the loop. `wait` hands back herdr's
+    # own exit code. The newlines land in /dev/null on this side.
+    #
+    # One line, no newlines in it: `printf %q` would turn those into $'...',
+    # which not every login shell on the other end reads.
+    local remote
     # shellcheck disable=SC2016 # expanded by the remote bash, not here
+    {
+      remote='t=$(cat); timeout 300 "$@" "$t" '"${wait_for[*]}"' & p=$!; trap "" PIPE; '
+      remote+='while kill -0 "$p" 2>/dev/null; do '
+      remote+='printf "\n" 2>/dev/null || { kill -TERM "$p"; break; }; sleep 1; done; wait "$p"'
+    }
     timeout 305 ssh "${SSH_OPTS[@]}" -- "$HOST" \
-      "$(printf '%q ' bash -c 't=$(cat); timeout 300 "$@" "$t" '"${wait_for[*]}" \
-        _ "${base[@]}" agent prompt "$pane")" <<<"$text" >/dev/null 2>&1 &
+      "$(printf '%q ' bash -c "$remote" _ "${base[@]}" agent prompt "$pane")" <<<"$text" >/dev/null 2>&1 &
   else
     timeout 300 "${base[@]}" agent prompt "$pane" "$text" "${wait_for[@]}" </dev/null >/dev/null 2>&1 &
   fi
@@ -756,13 +780,17 @@ cmd_prompt() {
   # 255 is ssh itself failing, so there is no agent to ask.
   (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
 
+  # The agent's answer is capped like the screen. One cut short fails jq below
+  # and counts as no status, the same as an agent that did not answer.
   local agent screen
   if [[ -n $HOST ]]; then
-    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" </dev/null 2>/dev/null) || true
+    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
     screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" \
       </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   else
-    agent=$("${base[@]}" agent get "$pane" </dev/null 2>/dev/null) || true
+    agent=$("${base[@]}" agent get "$pane" </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
     screen=$("${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
       head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   fi
