@@ -826,13 +826,26 @@ cmd_kill() {
   local pid
   pid=$(server_pid_for "$(socket_of "$name")") || die "no running server for that session"
 
-  kill -TERM "$pid" 2>/dev/null || true
+  # A refused signal to a process that is still there is a server this user
+  # does not own; one that is gone had simply exited in the meantime.
+  if ! kill -TERM "$pid" 2>/dev/null; then
+    [[ -e /proc/$pid ]] && die "not allowed to stop that server"
+  fi
   local i
   for ((i = 0; i < 10; i++)); do
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
   done
-  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  # SIGKILL is not instant either, so it gets the same wait, and a server
+  # still there after it is reported rather than called stopped.
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    for ((i = 0; i < 10; i++)); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -0 "$pid" 2>/dev/null && die "the server did not stop"
+  fi
 
   printf '{"ok":true}\n'
 }
