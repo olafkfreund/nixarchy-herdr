@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 8
 spec: spec/2026-09-24-8-review-followups.md
 ---
