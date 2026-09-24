@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 6
 author: olafkfreund
 ---
@@ -127,6 +127,10 @@ Neither item is exploitable today; both are defence in depth.
   plan.
 
 ## Open questions
+
+Resolved at approval (2026-09-24): the proposed defaults stand — the
+screen-relative scaling rule in 1, and the scope as written in 2.
+
 
 1. **Scaling rule for the menu.** The proposed default: width is 45% of the
    screen, between `Style.space(560)` and `Style.space(1400)`. Text scale is
