@@ -48,17 +48,24 @@ case "$1 ${2-}" in
     printf '{"result":{"snapshot":{"version":"fake","pad":"%s","workspaces":[{"workspace_id":"ws1","label":"proj"}],"agents":[{"agent_status":"idle","pane_id":"w1:p1","workspace_id":"ws1","terminal_title":"fake agent"}]}}}\n' "$pad" ;;
   "agent prompt") exit "${FAKE_PROMPT_RC:-0}" ;;
   "agent get")
-    printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "${FAKE_AGENT_STATUS:-idle}" ;;
-  "agent read") printf 'screen\n' ;;
+    # The pad goes first, so an answer cut short at a cap has no status left.
+    pad=$(head -c "${FAKE_AGENT_GET_BYTES:-0}" /dev/zero | tr '\0' x)
+    printf '{"result":{"agent":{"pad":"%s","agent_status":"%s"}}}\n' "$pad" "${FAKE_AGENT_STATUS:-idle}" ;;
+  "agent read") printf '%s' "${FAKE_SCREEN-screen}" ;;
   *) exit 1 ;;
 esac
 FAKE
 
 # The fake ssh records what it was asked and answers nothing, which is an
-# unreachable host as far as the script can tell.
+# unreachable host as far as the script can tell. With FAKE_SSH_RUN set it runs
+# the remote command here instead, against the fake herdr.
 cat > "$tmp/bin/ssh" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$@" >> "$FAKE_LOG"
+[[ -n ${FAKE_SSH_RUN-} ]] || exit 0
+while [[ $# -gt 0 && $1 != -- ]]; do shift; done
+shift 2
+exec bash -c "$*"
 FAKE
 
 # The fake hyprctl's windows are whatever FAKE_CLIENTS holds; every other
@@ -81,7 +88,8 @@ check() {
 reset() {
   : > "$FAKE_LOG"
   echo "[]" > "$FAKE_CLIENTS"
-  unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS
+  unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS \
+    FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN
 }
 
 # fake_client <args...>: a live process with that command line, for the window
@@ -185,5 +193,19 @@ out=$("$script" list)
 stop_bg
 check "8 not herdr" jq -e '.sessions[0].windowAddress == ""' <<<"$out" ||
   printf '  got: %s\n' "$(jq -c '[.sessions[] | .windowAddress]' <<<"$out")"
+
+# Case 11: a remote agent answering with megabytes is read only up to its cap.
+# Cut short, the answer has no status, and with nothing on screen either the
+# agent is unreachable rather than an answer. The outer timeout only stops a
+# failing run from hanging the suite.
+reset
+start=$SECONDS
+out=$(printf hi | FAKE_SSH_RUN=1 FAKE_AGENT_GET_BYTES=3000000 FAKE_SCREEN='' \
+  timeout 20 "$script" --host h1 prompt s1 w1:p1)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took and $len are jq variables
+check "11 big remote agent" jq -e --argjson took "$took" --argjson len "${#out}" \
+  '$took <= 10 and $len < 65536 and .ok == false' <<<"$out" ||
+  printf '  took %ss, %s bytes, got: %.200s\n' "$took" "${#out}" "$out"
 
 exit "$failed"

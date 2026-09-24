@@ -697,7 +697,9 @@ cmd_new() {
   if [[ -n $HOST && -n $dir ]]; then
     local i running=""
     for ((i = 0; i < 20; i++)); do
+      # Capped like the local list: the other host decides how much it sends.
       running=$(ssh_run "herdr session list --json" </dev/null 2>/dev/null |
+        head -c "$((SESSIONS_BYTE_CAP + 1))" |
         jq -r --arg name "$name" '.sessions[]? | select(.name == $name) | .running' 2>/dev/null) || true
       [[ $running == true ]] && break
       sleep 0.5
@@ -764,13 +766,17 @@ cmd_prompt() {
   # 255 is ssh itself failing, so there is no agent to ask.
   (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
 
+  # The agent's answer is capped like the screen. One cut short fails jq below
+  # and counts as no status, the same as an agent that did not answer.
   local agent screen
   if [[ -n $HOST ]]; then
-    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" </dev/null 2>/dev/null) || true
+    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
     screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" \
       </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   else
-    agent=$("${base[@]}" agent get "$pane" </dev/null 2>/dev/null) || true
+    agent=$("${base[@]}" agent get "$pane" </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
     screen=$("${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
       head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   fi
