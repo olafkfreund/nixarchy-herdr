@@ -32,7 +32,8 @@ export FAKE_LOG="$tmp/log" FAKE_CLIENTS="$tmp/clients"
 for var in ${!HERDR_@}; do unset "$var"; done
 
 # The fake herdr. `session list` names one running session, s1; its snapshot
-# has one agent and is padded out to FAKE_SNAPSHOT_BYTES. Every call logs its
+# has one agent, or FAKE_AGENTS and FAKE_TABS in its place, and is padded out
+# to FAKE_SNAPSHOT_BYTES. Every call logs its
 # argv to FAKE_LOG, one argument per line.
 cat > "$tmp/bin/herdr" <<'FAKE'
 #!/bin/bash
@@ -45,7 +46,9 @@ case "$1 ${2-}" in
     # stdout off the sleep, or a killed fake would leave it holding the pipe.
     sleep "${FAKE_SNAPSHOT_SLEEP:-0}" >/dev/null 2>&1
     pad=$(head -c "${FAKE_SNAPSHOT_BYTES:-0}" /dev/zero | tr '\0' x)
-    printf '{"result":{"snapshot":{"version":"fake","pad":"%s","workspaces":[{"workspace_id":"ws1","label":"proj"}],"agents":[{"agent_status":"idle","pane_id":"w1:p1","workspace_id":"ws1","terminal_title":"fake agent"}]}}}\n' "$pad" ;;
+    agents=${FAKE_AGENTS:-'[{"agent_status":"idle","pane_id":"w1:p1","workspace_id":"ws1","terminal_title":"fake agent"}]'}
+    printf '{"result":{"snapshot":{"version":"fake","pad":"%s","workspaces":[{"workspace_id":"ws1","label":"proj"}],"tabs":%s,"agents":%s}}}\n' \
+      "$pad" "${FAKE_TABS:-[]}" "$agents" ;;
   "agent prompt")
     printf 'prompt-pid %s\n' "$$" >> "$FAKE_LOG"
     # exec, so the pid logged is the one waiting and a TERM to it ends the wait.
@@ -96,7 +99,8 @@ reset() {
   : > "$FAKE_LOG"
   echo "[]" > "$FAKE_CLIENTS"
   unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS \
-    FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN FAKE_SSH_PIPE FAKE_PROMPT_SLEEP
+    FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN FAKE_SSH_PIPE FAKE_PROMPT_SLEEP \
+    FAKE_AGENTS FAKE_TABS
 }
 
 # fake_client <args...>: a live process with that command line, for the window
@@ -253,5 +257,17 @@ took=$((SECONDS - start))
 check "11 big remote agent" jq -e --argjson took "$took" --argjson len "${#out}" \
   '$took <= 10 and $len < 65536 and .ok == false' <<<"$out" ||
   printf '  took %ss, %s bytes, got: %.200s\n' "$took" "${#out}" "$out"
+
+# Case 12: each agent names the tab it sits in. A tab nobody named carries its
+# number as its label, and an agent with no tab has none; both come out empty.
+reset
+out=$(FAKE_TABS='[{"tab_id":"w1:t1","label":"review","number":1},
+                   {"tab_id":"w1:t2","label":"2","number":2}]' \
+  FAKE_AGENTS='[{"agent_status":"idle","pane_id":"w1:p1","tab_id":"w1:t1","terminal_title":"a1"},
+                {"agent_status":"idle","pane_id":"w1:p2","tab_id":"w1:t2","terminal_title":"a2"},
+                {"agent_status":"idle","pane_id":"w1:p3","terminal_title":"a3"}]' \
+  "$script" list)
+check "12 tab names" jq -e '[.sessions[0].agentList[] | .tab] == ["review", "", ""]' <<<"$out" ||
+  printf '  got: %s\n' "$(jq -c '[.sessions[0].agentList[]? | .tab]' <<<"$out")"
 
 exit "$failed"
