@@ -83,7 +83,9 @@ PermitLocalCommand=no`. There is no `StrictHostKeyChecking` override.
     Style.space(1400))`
 - The card width becomes `min(cardWidth, panel.width - 2 × Style.gapsOut)`.
 - `focusedScreen()` falls back to `screens[0]`.
-- The comment at `Menu.qml:19-21` is updated.
+- A comment above the new sizing properties explains the rule. (Correction
+  2026-09-24: the plan cited a comment at `Menu.qml:19-21`, which does not
+  exist; there was no sizing comment to update.)
 - The bar dropdown and the pinned panel don't change.
 
 **D8. The docs say what the code does.**
@@ -232,7 +234,8 @@ U1. **`Menu.qml`: make the D7 change and the fallback screen.**
   | 1440 | 2.13 | 1152 |
   | 2160 | 2.4 | 1400 |
 
-  The widths assume the screen width is 16:9 of its height.
+  The widths use real screen widths (1366, 1920, 2560, 3840). (Correction
+  2026-09-24: an exact 16:9 width for 768 is 1365.33, which gives 614.)
 
 → Verify: the numbers match. `omarchy plugin validate .` passes.
 
