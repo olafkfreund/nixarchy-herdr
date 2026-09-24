@@ -58,11 +58,11 @@ Item {
   // itself to the screen it opens on rather than to fixed numbers. scaleH is
   // that screen's height in logical pixels - Hyprland has already divided by
   // the monitor's scale, so a 4K panel at scale 2 counts as 1080. Text is
-  // 1.6x on 1080 and follows the height between 1.2x and 2.4x; the card
+  // 1.25x on 1080 and follows the height between 1.0x and 2.0x; the card
   // takes 45% of the width, within bounds. Style.font and Style.space still
   // carry the theme's own sizes, and these factors multiply them.
   readonly property real scaleH: root.targetScreen ? root.targetScreen.height : 1080
-  readonly property real textScale: Math.max(1.2, Math.min(2.4, 1.6 * scaleH / 1080))
+  readonly property real textScale: Math.max(1.0, Math.min(2.0, 1.25 * scaleH / 1080))
   readonly property int cardWidth: Math.max(Style.space(560),
                                             Math.min(Style.space(1400), Math.round(panel.width * 0.45)))
 
@@ -260,7 +260,7 @@ Item {
     screen: root.targetScreen
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
-    exclusionMode: ExclusionMode.Ignore
+    exclusionMode: ExclusionMode.Normal
 
     WlrLayershell.namespace: "nixarchy-herdr-menu"
     WlrLayershell.layer: WlrLayer.Overlay
