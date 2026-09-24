@@ -85,15 +85,16 @@ Item {
   // list not arriving; this is about the one thing you just pressed, which
   // otherwise failed by leaving the row exactly where it was.
   property string actionError: ""
-  // Session the script is currently acting on, so its row can dim.
-  property string pendingName: ""
+  // Session the script is currently acting on, as sessionKey(), so its row
+  // can dim.
+  property string pendingKey: ""
   // The session the confirm dialog is asking about, held while it is open,
   // and which of the two destructive actions it will run on Confirm.
   property var confirmTarget: null
   property string confirmAction: ""
   property bool confirmOpen: false
 
-  // Which agent spoke last, as "<session>\u0000<pane>", and every agent that
+  // Which agent spoke last, as agentKey(), and every agent that
   // was already asking when we last looked.
   //
   // Herdr plays a sound when an agent starts wanting something, and that
@@ -230,7 +231,7 @@ Item {
 
   function run(action, session, extra) {
     if (!session || !validName(session.name) || actionProc.running) return
-    pendingName = session.name
+    pendingKey = sessionKey(session)
     var command = [root.script]
     if (session.host) command.push("--host", session.host)
     command.push(action, session.name)
@@ -562,7 +563,7 @@ Item {
 
   function newSession(host, name, dir) {
     if (!validName(name) || actionProc.running) return
-    pendingName = name
+    pendingKey = sessionKey({ host: host, name: name })
     var command = [root.script]
     if (host) command.push("--host", host)
     command.push("new", name)
@@ -702,8 +703,14 @@ Item {
     return parts.join(", ")
   }
 
-  function agentKey(sessionName, pane) {
-    return String(sessionName) + "\u0000" + String(pane)
+  // A session name is only unique on its own host, so every key the UI
+  // matches rows by carries the host too.
+  function sessionKey(session) {
+    return (session.host || "") + "\u0000" + session.name
+  }
+
+  function agentKey(session, pane) {
+    return sessionKey(session) + "\u0000" + String(pane)
   }
 
   // Everything that is asking for something right now, and which of those is
@@ -719,7 +726,7 @@ Item {
       var agents = session.agentList || []
       for (var j = 0; j < agents.length; j++) {
         if (!root.agentWants(agents[j].status)) continue
-        var key = root.agentKey(session.name, agents[j].pane)
+        var key = root.agentKey(session, agents[j].pane)
         wantingNow[key] = true
         if (root.wantingBefore[key]) continue
         if (freshest === null || (agents[j].seq || 0) > freshest.seq)
@@ -737,9 +744,9 @@ Item {
     root.attentionPrimed = true
   }
 
-  function blinking(sessionName, agent) {
+  function blinking(session, agent) {
     if (!agent || root.attentionKey === "") return false
-    return root.agentKey(sessionName, agent.pane) === root.attentionKey
+    return root.agentKey(session, agent.pane) === root.attentionKey
   }
 
   function applyPayload(text) {
@@ -840,7 +847,7 @@ Item {
       }
     }
     onExited: function(exitCode) {
-      root.pendingName = ""
+      root.pendingKey = ""
       // A stopped server disappears from the list, and a freshly opened
       // window takes a moment to register its agents. One beat, then look
       // again.
