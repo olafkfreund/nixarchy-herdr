@@ -1,0 +1,17 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: bash -n bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh
+      - name: shellcheck
+        run: shellcheck bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh
+      - name: session actions
+        run: node tests/session-actions.cjs
+      - name: herdr-sessions
+        run: bash tests/herdr-sessions.sh
