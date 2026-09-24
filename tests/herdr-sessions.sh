@@ -194,6 +194,22 @@ stop_bg
 check "8 not herdr" jq -e '.sessions[0].windowAddress == ""' <<<"$out" ||
   printf '  got: %s\n' "$(jq -c '[.sessions[] | .windowAddress]' <<<"$out")"
 
+# Case 9: demo mode touches its own file and nothing else in the cache
+# directory, however that directory came to hold it.
+reset
+cache="$XDG_CACHE_HOME/omarchy-herdr"
+mkdir -p "$cache/keep"
+: > "$cache/keep.txt"
+chmod 644 "$cache/keep.txt"
+out=$("$script" demo on)
+# shellcheck disable=SC2329 # called through check
+cache_left_alone() {
+  [[ -d $cache/keep && $(stat -c %a "$cache/keep.txt") == 644 ]]
+}
+check "9 demo leaves the cache alone" cache_left_alone ||
+  printf '  got: %.200s\n  left: %s\n' "$out" "$(ls -l "$cache")"
+"$script" demo off >/dev/null
+
 # Case 11: a remote agent answering with megabytes is read only up to its cap.
 # Cut short, the answer has no status, and with nothing on screen either the
 # agent is unreachable rather than an answer. The outer timeout only stops a
