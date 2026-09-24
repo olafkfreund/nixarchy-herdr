@@ -27,7 +27,7 @@ TAB  /  SHIFT + TAB        → Cycle through the row's buttons
 RETURN  /  SPACE           → Jump to the agent, open the session, or press the button
 o                          → Open the session under the cursor
 SHIFT + K                  → Kill that session's server (asks first)
-x                          → Delete a stopped session
+x                          → Delete a stopped session (asks first)
 r                          → Refresh
 ESCAPE                     → Close
 ── Menu only ─────────────────────
@@ -39,7 +39,7 @@ p                          → Pin the panel to the desktop, or unpin it
 RETURN                     → Create the session, or send the prompt
 ESCAPE                     → Close the line and stop a running prompt
 ── Confirm dialog ────────────────
-LEFT  /  RIGHT             → Choose Cancel or Kill / Send
+LEFT  /  RIGHT             → Choose Cancel or Kill / Delete / Send
 RETURN                     → Confirm the highlighted choice (opens on Cancel)
 ESCAPE                     → Cancel
 KEYS

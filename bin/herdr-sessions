@@ -135,7 +135,12 @@ valid_host() {
 # handshake a minute. A second argument raises the 8s ceiling for the one
 # call that waits on an agent.
 ssh_options() {
-  SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=4)
+  # Nothing is forwarded, whatever ~/.ssh/config says for that host: the
+  # remote side runs this script and herdr, and needs neither the agent, the
+  # display nor a port, nor a local command run on connect.
+  SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=4
+            -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes
+            -o PermitLocalCommand=no)
   if [[ -n ${XDG_RUNTIME_DIR-} && -d ${XDG_RUNTIME_DIR-} ]]; then
     SSH_OPTS+=(-o ControlMaster=auto -o ControlPersist=60
                -o "ControlPath=$XDG_RUNTIME_DIR/nixarchy-herdr-%C")
@@ -330,11 +335,14 @@ snapshot_for() {
   local name="$1" is_default="$2"
   local out
   # `|| true` because the cap in front of this can close the pipe on the
-  # server, and a SIGPIPE there is a bounded read rather than a failure.
+  # server, and a SIGPIPE there is a bounded read rather than a failure. The
+  # timeout is for a server that takes the connection and never answers: its
+  # row falls back like any other that did not reply, instead of stalling
+  # every refresh behind it.
   if [[ $is_default == true ]]; then
-    out=$(herdr api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(timeout 2 herdr api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   else
-    out=$(herdr --session "$name" api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(timeout 2 herdr --session "$name" api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
   fi
   [[ -n $out ]] || return 1
   # One oversized server is skipped rather than allowed to take the list down:
@@ -346,7 +354,8 @@ snapshot_for() {
 
 cmd_list() {
   local sessions_json
-  sessions_json=$(herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
+  # Bounded in time as well as size: an empty answer is "could not reach".
+  sessions_json=$(timeout 4 herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
   [[ -n $sessions_json ]] || die "could not reach herdr"
   over_byte_cap "$sessions_json" "$SESSIONS_BYTE_CAP" && die "session list too large to read safely"
 
@@ -426,13 +435,16 @@ cmd_list() {
   # whole list down with it.
   printf '%s' "$snapshots" | jq -e . >/dev/null 2>&1 || snapshots='{}'
 
+  # The big inputs go in through pipes, not arguments: Linux refuses any one
+  # argument over 128 KB, and a single busy server's snapshot passes that.
   printf '%s' "$sessions_json" | jq -c \
-    --argjson snapshots "$snapshots" \
-    --argjson saved "$saved" \
+    --slurpfile snapshotsIn <(printf '%s' "$snapshots") \
+    --slurpfile savedIn <(printf '%s' "$saved") \
     --argjson agentCap "$AGENT_COUNT_CAP" \
-    --arg windows "$windows" \
-    --arg ghosts "$ghosts" '
-    ($windows | split("\n") | map(select(length > 0) | split("\t"))
+    --rawfile windows <(printf '%s' "$windows") \
+    --rawfile ghosts <(printf '%s' "$ghosts") '
+    ($snapshotsIn[0]) as $snapshots | ($savedIn[0]) as $saved
+    | ($windows | split("\n") | map(select(length > 0) | split("\t"))
       | map({key: .[0], value: .[1]}) | from_entries) as $win
     | ($ghosts | split("\n") | map(select(length > 0))) as $ghostNames
     | [.sessions[]?
@@ -515,7 +527,7 @@ cmd_list_remote() {
   [[ -n $out ]] || die "$HOST is unreachable"
   over_byte_cap "$out" "$TOTAL_BYTE_CAP" && die "$HOST answered with too much to read safely"
   windows=$(window_map || true)
-  printf '%s' "$out" | jq -c --arg host "$HOST" --arg windows "$windows" '
+  printf '%s' "$out" | jq -c --arg host "$HOST" --rawfile windows <(printf '%s' "$windows") '
     ($windows | split("\n") | map(select(length > 0) | split("\t"))
       | map({key: .[0], value: .[1]}) | from_entries) as $win
     | .sessions |= map(.host = $host
@@ -709,6 +721,10 @@ cmd_prompt() {
 
   local text
   text=$(head -c 16384)
+  # The text is typed into the agent's terminal, so a control character in it
+  # is a keystroke: an escape sequence could end a bracketed paste early, and a
+  # carriage return would submit half of it. Tab and newline are kept.
+  text=$(printf '%s' "$text" | tr -d '\000-\010\013-\037\177')
   [[ -n ${text//[[:space:]]/} ]] || die "nothing to send"
 
   local -a base=(herdr)
@@ -719,7 +735,7 @@ cmd_prompt() {
   # substitution, so a TERM from the menu (Esc, or the menu closing) reaches
   # it: `timeout` passes the signal on to herdr. In a `$(...)` it would sit in
   # a subshell the trap cannot see, and keep waiting on the agent for minutes.
-  local child
+  local child rc=0
   if [[ -n $HOST ]]; then
     local -a SSH_OPTS
     ssh_options
@@ -734,8 +750,11 @@ cmd_prompt() {
   fi
   child=$!
   trap 'kill -TERM "$child" 2>/dev/null; exit 143' TERM INT HUP
-  wait "$child" || true
+  wait "$child" || rc=$?
   trap - TERM INT HUP
+  # 124 is the timeout running out, which still ends in reading the screen.
+  # 255 is ssh itself failing, so there is no agent to ask.
+  (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
 
   local agent screen
   if [[ -n $HOST ]]; then
@@ -752,6 +771,12 @@ cmd_prompt() {
   local status
   status=$(printf '%s' "$agent" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || true
   [[ -n $status ]] || [[ -n $screen ]] || die "could not reach that agent"
+  # Any other exit is herdr refusing the prompt. The screen would show
+  # whatever was there before, which reads as an answer when nothing was sent.
+  if (( rc != 0 && rc != 124 )); then
+    [[ $status == blocked ]] && die "the agent is waiting on a question; nothing was sent"
+    die "herdr did not start the prompt (agent is ${status:-unknown})"
+  fi
   jq -cn --arg status "${status:-timeout}" --arg output "$screen" \
     '{ok: true, status: $status, output: $output}'
 }
@@ -801,13 +826,26 @@ cmd_kill() {
   local pid
   pid=$(server_pid_for "$(socket_of "$name")") || die "no running server for that session"
 
-  kill -TERM "$pid" 2>/dev/null || true
+  # A refused signal to a process that is still there is a server this user
+  # does not own; one that is gone had simply exited in the meantime.
+  if ! kill -TERM "$pid" 2>/dev/null; then
+    [[ -e /proc/$pid ]] && die "not allowed to stop that server"
+  fi
   local i
   for ((i = 0; i < 10; i++)); do
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
   done
-  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  # SIGKILL is not instant either, so it gets the same wait, and a server
+  # still there after it is reported rather than called stopped.
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    for ((i = 0; i < 10; i++)); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -0 "$pid" 2>/dev/null && die "the server did not stop"
+  fi
 
   printf '{"ok":true}\n'
 }

@@ -253,7 +253,7 @@ PanelKeyCatcher {
         width: list.width - (list.interactive ? Style.space(10) : 0)
         height: rowContent.implicitHeight + Style.space(10)
         radius: Style.cornerRadius
-        opacity: panel.pendingName === modelData.name ? 0.4 : 1
+        opacity: panel.pendingKey === panel.sessionKey(modelData) ? 0.4 : 1
         color: active
           ? Qt.rgba(panel.foreground.r, panel.foreground.g, panel.foreground.b, 0.08)
           : "transparent"
@@ -472,7 +472,7 @@ PanelKeyCatcher {
                   color: panel.agentColor(agentRow.modelData.status)
 
                   SequentialAnimation on opacity {
-                    running: panel.blinking(row.modelData.name, agentRow.modelData)
+                    running: panel.blinking(row.modelData, agentRow.modelData)
                     loops: Animation.Infinite
                     alwaysRunToEnd: true
                     NumberAnimation { to: 0.25; duration: 600; easing.type: Easing.InOutQuad }

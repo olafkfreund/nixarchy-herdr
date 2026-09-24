@@ -49,11 +49,22 @@ Item {
     var screens = Quickshell.screens
     for (var i = 0; i < screens.length; i++)
       if (screens[i].name === name) return screens[i]
-    return null
+    // No focused output yet, or a name that matches nothing: any screen beats
+    // a surface the compositor has to place on its own.
+    return screens.length > 0 ? screens[0] : null
   }
 
-  readonly property real textScale: 1.6
-  readonly property int cardWidth: Style.space(760)
+  // The menu is read from further away than a bar dropdown, so it sizes
+  // itself to the screen it opens on rather than to fixed numbers. scaleH is
+  // that screen's height in logical pixels - Hyprland has already divided by
+  // the monitor's scale, so a 4K panel at scale 2 counts as 1080. Text is
+  // 1.6x on 1080 and follows the height between 1.2x and 2.4x; the card
+  // takes 45% of the width, within bounds. Style.font and Style.space still
+  // carry the theme's own sizes, and these factors multiply them.
+  readonly property real scaleH: root.targetScreen ? root.targetScreen.height : 1080
+  readonly property real textScale: Math.max(1.2, Math.min(2.4, 1.6 * scaleH / 1080))
+  readonly property int cardWidth: Math.max(Style.space(560),
+                                            Math.min(Style.space(1400), Math.round(panel.width * 0.45)))
 
   // Plugin lifecycle hooks. The host calls open(payloadJson) after
   // `omarchy-shell shell summon nixarchy.herdr ...` and close() when hidden.
@@ -167,6 +178,9 @@ Item {
     var command = [herd.script]
     if (t.host) command.push("--host", t.host)
     command.push("prompt", t.session, t.pane)
+    // C1 controls (U+0080-U+009F) are two bytes in UTF-8, so the script's
+    // byte-wise tr cannot catch them; a terminal still acts on them.
+    text = text.replace(/[\u0080-\u009f]/g, "")
     promptProc.text = text
     promptProc.command = command
     // Closed after each write; a second prompt needs it open again before
@@ -269,7 +283,8 @@ Item {
 
     BorderSurface {
       id: surface
-      width: Math.min(root.cardWidth, Math.round(panel.width * 0.6))
+      // cardWidth's floor can exceed a narrow screen; the gaps win.
+      width: Math.min(root.cardWidth, panel.width - Style.gapsOut * 2)
       height: Math.min(card.bodyHeight + padding * 2
                        + Border.top(borderSpec) + Border.bottom(borderSpec)
                        + (root.inputOpen ? newRow.height + Style.space(6) : 0),

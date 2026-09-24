@@ -9,7 +9,8 @@ const context = { root: { script: 'herdr-sessions' }, actionProc: {}, dismiss() 
 vm.createContext(context);
 for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent',
                     'removeSession', 'killSession', 'askKill', 'askDelete', 'ask',
-                    'closeConfirm', 'confirmPending']) {
+                    'closeConfirm', 'confirmPending', 'sessionKey', 'agentKey', 'agentWants',
+                    'blinking', 'updateAttention']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
   assert.ok(match, `Missing function: ${name}`);
   vm.runInContext(match[0], context);
@@ -36,6 +37,29 @@ for (const host of [undefined, '', 'razer', 'p620']) {
   }
 }
 console.log('PASS: local and remote open, focus, fallback, kill and delete routing');
+
+// A session name is only unique on its own host. Keyed by name alone, acting
+// on the local "3" dimmed razer's "3" too, and razer's agent asking blinked
+// the local one.
+{
+  const local = { name: '3' };
+  const remote = { name: '3', host: 'razer' };
+  assert.notEqual(context.sessionKey(local), context.sessionKey(remote));
+
+  context.actionProc = { running: false };
+  context.run('open', local);
+  assert.equal(context.pendingKey, context.sessionKey(local));
+  assert.notEqual(context.pendingKey, context.sessionKey(remote));
+
+  // updateAttention and blinking read their state through root.
+  Object.assign(context.root, { agentKey: context.agentKey, agentWants: context.agentWants,
+                                attentionKey: '', wantingBefore: {}, attentionPrimed: true });
+  context.updateAttention([{ ...remote, agentList: [{ pane: 'w1:p1', status: 'blocked' }] },
+                           { ...local, agentList: [{ pane: 'w1:p1', status: 'working' }] }]);
+  assert.equal(context.blinking(remote, { pane: 'w1:p1' }), true);
+  assert.equal(context.blinking(local, { pane: 'w1:p1' }), false);
+}
+console.log('PASS: dimming and blinking tell the same name on two hosts apart');
 
 // Deleting a stopped session asks first, and runs only once confirmed.
 for (const host of [undefined, 'razer']) {
