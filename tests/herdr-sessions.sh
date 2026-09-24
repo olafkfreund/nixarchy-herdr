@@ -1,0 +1,72 @@
+#!/bin/bash
+# Cases for bin/herdr-sessions, run against fakes: nothing here reaches a real
+# herdr server, ssh or Hyprland. Each case runs the script in a temp HOME with
+# fake herdr, ssh and hyprctl first on PATH, and the fake herdr is steered by
+# FAKE_* variables. Prints `ok <case>` or `FAIL <case>`, exits 0 only if every
+# case passed.
+#
+#   bash tests/herdr-sessions.sh
+
+set -u
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+script="$here/../bin/herdr-sessions"
+
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/home" "$tmp/run"
+chmod 700 "$tmp/run"
+
+export HOME="$tmp/home" XDG_RUNTIME_DIR="$tmp/run" XDG_CACHE_HOME="$tmp/home/.cache"
+export PATH="$tmp/bin:$PATH"
+export FAKE_LOG="$tmp/log"
+# Anything herdr set in the calling shell is not the fake's business.
+for var in ${!HERDR_@}; do unset "$var"; done
+
+# The fake herdr. `session list` names one running session, s1; its snapshot
+# has one agent and is padded out to FAKE_SNAPSHOT_BYTES. Every call logs its
+# argv to FAKE_LOG, one argument per line.
+cat > "$tmp/bin/herdr" <<'FAKE'
+#!/bin/bash
+printf '%s\n' "$@" >> "$FAKE_LOG"
+[[ ${1-} == --session ]] && shift 2
+case "$1 ${2-}" in
+  "session list")
+    printf '{"sessions":[{"name":"s1","default":false,"running":true,"session_dir":"/nonexistent"}]}\n' ;;
+  "api snapshot")
+    # stdout off the sleep, or a killed fake would leave it holding the pipe.
+    sleep "${FAKE_SNAPSHOT_SLEEP:-0}" >/dev/null 2>&1
+    pad=$(head -c "${FAKE_SNAPSHOT_BYTES:-0}" /dev/zero | tr '\0' x)
+    printf '{"result":{"snapshot":{"version":"fake","pad":"%s","workspaces":[{"workspace_id":"ws1","label":"proj"}],"agents":[{"agent_status":"idle","pane_id":"w1:p1","workspace_id":"ws1","terminal_title":"fake agent"}]}}}\n' "$pad" ;;
+  "agent prompt") exit "${FAKE_PROMPT_RC:-0}" ;;
+  "agent get")
+    printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "${FAKE_AGENT_STATUS:-idle}" ;;
+  "agent read") printf 'screen\n' ;;
+  *) exit 1 ;;
+esac
+FAKE
+
+# The fake ssh records what it was asked and answers nothing, which is an
+# unreachable host as far as the script can tell.
+cat > "$tmp/bin/ssh" <<'FAKE'
+#!/bin/bash
+printf '%s\n' "$@" >> "$FAKE_LOG"
+FAKE
+
+printf '#!/bin/sh\necho "[]"\n' > "$tmp/bin/hyprctl"
+chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl"
+
+failed=0
+# check <case> <command...>: the command's status is the verdict.
+check() {
+  local name="$1"; shift
+  if "$@"; then echo "ok $name"; else echo "FAIL $name"; failed=1; fi
+}
+
+# Each case starts with a clean log and the fake's defaults.
+reset() {
+  : > "$FAKE_LOG"
+  unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS
+}
+
+exit "$failed"
