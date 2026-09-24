@@ -28,7 +28,9 @@ session. So they pile up unseen, on more than one machine.
 ## The menu
 
 `SUPER + SHIFT + H` opens it on the screen you are working on, and the same
-chord or `Esc` closes it. It lists this machine's sessions first, then each
+chord or `Esc` closes it. Its size and text follow that screen: text grows
+with the screen's height, and the card takes a bit under half its width, within
+set limits. It lists this machine's sessions first, then each
 host in `~/.config/omarchy/herdr.json`, with every remote row named
 `host · session`. The title line says how each host answered: `●` something
 running, `○` nothing running, `–` no answer.
@@ -95,11 +97,11 @@ Dropdown panel only:
 | `Enter` | Create the session, or send the prompt; the answer shows below |
 | `Esc` | Close the line, and stop waiting on a prompt that is still running |
 
-### In a confirm dialog (kill, or prompting a busy agent)
+### In a confirm dialog (kill, delete, or prompting a busy agent)
 
 | Key | Does |
 | --- | --- |
-| `←` / `→` | Choose between Cancel and Kill or Send |
+| `←` / `→` | Choose between Cancel and Kill, Delete or Send |
 | `Enter` | Confirm the highlighted choice; it opens on Cancel |
 | `Esc` | Cancel |
 
@@ -185,9 +187,9 @@ one colour.
 - **The skull** (or `K`) ends that server, and is the only way it is ended from
   here. It asks first, and the dialog opens on **Cancel** rather than on the
   confirming side: a dialog that destroys something on a reflexive Enter is
-  worse than no dialog, because it trains the reflex. It is the only action in
-  the panel that stops to ask - opening, focusing and deleting a stopped
-  session are all recoverable or trivial, and this one is not. `herdr session stop` asks over herdr's own socket, so a server too
+  worse than no dialog, because it trains the reflex. Kill and delete stop to
+  ask; opening and focusing do not, because they are recoverable or trivial
+  and these two are not. `herdr session stop` asks over herdr's own socket, so a server too
   wedged to read that socket never hears the request and the button looks
   broken at exactly the moment you needed it. This signals the process instead:
   TERM first, and KILL a second later if that was not enough. The shared
