@@ -13,13 +13,21 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 script="$here/../bin/herdr-sessions"
 
 tmp=$(mktemp -d)
-trap 'rm -rf -- "$tmp"' EXIT
+# Background processes the cases start, so none outlives the run.
+bg=()
+stop_bg() {
+  local p
+  # The child first: killing its bash alone would leave the sleep behind.
+  for p in "${bg[@]}"; do pkill -P "$p"; kill "$p"; wait "$p"; done 2>/dev/null
+  bg=()
+}
+trap 'stop_bg; rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/home" "$tmp/run"
 chmod 700 "$tmp/run"
 
 export HOME="$tmp/home" XDG_RUNTIME_DIR="$tmp/run" XDG_CACHE_HOME="$tmp/home/.cache"
 export PATH="$tmp/bin:$PATH"
-export FAKE_LOG="$tmp/log"
+export FAKE_LOG="$tmp/log" FAKE_CLIENTS="$tmp/clients"
 # Anything herdr set in the calling shell is not the fake's business.
 for var in ${!HERDR_@}; do unset "$var"; done
 
@@ -53,7 +61,12 @@ cat > "$tmp/bin/ssh" <<'FAKE'
 printf '%s\n' "$@" >> "$FAKE_LOG"
 FAKE
 
-printf '#!/bin/sh\necho "[]"\n' > "$tmp/bin/hyprctl"
+# The fake hyprctl's windows are whatever FAKE_CLIENTS holds; every other
+# call, dispatch included, does nothing.
+cat > "$tmp/bin/hyprctl" <<'FAKE'
+#!/bin/sh
+if [ "$1" = clients ]; then cat "$FAKE_CLIENTS"; else echo "[]"; fi
+FAKE
 chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl"
 
 failed=0
@@ -67,7 +80,29 @@ check() {
 # Each case starts with a clean log and the fake's defaults.
 reset() {
   : > "$FAKE_LOG"
+  echo "[]" > "$FAKE_CLIENTS"
   unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS
+}
+
+# fake_client <args...>: a live process with that command line, for the window
+# matching to find; its pid is the last one in bg. The `; :` keeps bash from
+# exec-ing sleep in its place, which would lose the args. Waits until the
+# command line is readable, or the script could look before it exists.
+fake_client() {
+  bash -c 'sleep 30; :' "$@" 2>/dev/null &
+  bg+=($!)
+  local i
+  for ((i = 0; i < 100; i++)); do
+    grep -qaF 'sleep 30; :' "/proc/$!/cmdline" 2>/dev/null && return 0
+    sleep 0.05
+  done
+}
+
+# fake_windows <pid> <n>: that process owns n windows, 0x10 upwards, and
+# nothing else owns any.
+fake_windows() {
+  jq -n --argjson pid "$1" --argjson n "$2" \
+    '[range($n) | {pid: $pid, address: "0x\(. + 10)", workspace: {name: "1"}}]' > "$FAKE_CLIENTS"
 }
 
 # Case 1: a snapshot bigger than one exec argument may be (128 KB on Linux)
@@ -115,5 +150,40 @@ ssh_told_no_forwarding() {
 }
 check "5 ssh options" ssh_told_no_forwarding ||
   printf '  got: %.200s\n  logged: %q\n' "$out" "$(cat "$FAKE_LOG")"
+
+# Case 6: a process owning two windows (ghostty, footclient) is matched to
+# neither, so open starts a window rather than focusing the wrong one. With
+# one window it still matches.
+reset
+fake_client herdr --session s1
+fake_windows "${bg[-1]}" 2
+two=$("$script" list)
+fake_windows "${bg[-1]}" 1
+one=$("$script" list)
+stop_bg
+check "6 one process, two windows" jq -en --argjson two "$two" --argjson one "$one" \
+  '$two.sessions[0].windowAddress == "" and $one.sessions[0].windowAddress == "0x10"' ||
+  printf '  two: %s, one: %s\n' "$(jq -c '[.sessions[] | .windowAddress]' <<<"$two")" \
+    "$(jq -c '[.sessions[] | .windowAddress]' <<<"$one")"
+
+# Case 7: a narrow COLUMNS does not cut the command line short of its
+# --session.
+reset
+fake_client herdr --session s1 "--x$(printf 'x%.0s' {1..200})"
+fake_windows "${bg[-1]}" 1
+out=$(COLUMNS=40 "$script" list)
+stop_bg
+check "7 long command line" jq -e '.sessions[0].windowAddress == "0x10"' <<<"$out" ||
+  printf '  got: %s\n' "$(jq -c '[.sessions[] | .windowAddress]' <<<"$out")"
+
+# Case 8: a path that merely ends in herdr, like an editor on its source, is
+# not herdr.
+reset
+fake_client vim /tmp/src/herdr --session s1
+fake_windows "${bg[-1]}" 1
+out=$("$script" list)
+stop_bg
+check "8 not herdr" jq -e '.sessions[0].windowAddress == ""' <<<"$out" ||
+  printf '  got: %s\n' "$(jq -c '[.sessions[] | .windowAddress]' <<<"$out")"
 
 exit "$failed"

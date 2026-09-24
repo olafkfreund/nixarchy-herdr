@@ -242,25 +242,31 @@ window_map() {
   # single window could decide how much this costs.
   over_byte_cap "$clients" "$WINDOWS_BYTE_CAP" && return 0
 
+  # Only a process that owns exactly one window is matched. A terminal that
+  # serves every window from one process (ghostty, footclient) cannot say which
+  # of them is showing herdr, and focusing the wrong one is worse than opening
+  # a new one. Foot, which the launcher uses, is one process per window.
   declare -A window_of_pid=()
   local pid address workspace
   while IFS=$'\t' read -r pid address workspace; do
     [[ -n $pid && -n $address ]] || continue
     window_of_pid[$pid]=$address$'\t'$workspace
   done < <(printf '%s' "$clients" |
-    jq -r '.[] | select(.pid > 0)
-           | "\(.pid)\t\(.address)\t\(.workspace.name // "")"' 2>/dev/null)
+    jq -r '[.[] | select(.pid > 0)] | group_by(.pid) | map(select(length == 1) | .[0])
+           | .[] | "\(.pid)\t\(.address)\t\(.workspace.name // "")"' 2>/dev/null)
 
   ((${#window_of_pid[@]})) || return 0
 
   # Only the herdr processes are read in. Reading every command line on the
   # machine into an array cost more than every other step in this script put
   # together, and all but a handful of those lines never mention herdr.
+  # pgrep rather than ps: it reads the whole of /proc/<pid>/cmdline, where ps
+  # cuts the line at COLUMNS and can drop the --session off the end.
   declare -A args_of=()
   while read -r pid args; do
     [[ $pid =~ ^[0-9]+$ ]] || continue
     args_of[$pid]=$args
-  done < <(ps -eo pid=,args= 2>/dev/null | grep -E 'her[d]r')
+  done < <(pgrep -af herdr 2>/dev/null)
 
   declare -A seen=()
 
@@ -285,7 +291,9 @@ window_map() {
     read -r -a words <<<"${1-}"
     local i j name host
     for ((i = 0; i < ${#words[@]}; i++)); do
-      [[ ${words[i]##*/} == herdr ]] || continue
+      # The command itself, by name or from a bin directory; a file that only
+      # happens to be called herdr, like `vim ~/src/herdr`, is not.
+      [[ ${words[i]} == herdr || ${words[i]} == */bin/herdr ]] || continue
       # `herdr server` is the background process, not a window's client.
       [[ ${words[i + 1]-} == server ]] && return 1
       name=default
