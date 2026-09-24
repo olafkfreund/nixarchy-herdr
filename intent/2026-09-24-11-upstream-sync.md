@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 11
 author: olafkfreund
 ---
@@ -80,6 +80,13 @@ in a `cmd_list` that #6 and #8 rewrote around pipes.
 - **Merge with a merge commit.**
 
 ## Open questions
+
+Resolved at approval (2026-09-24), with the proposed defaults:
+
+1. `git merge -s ours upstream/master`, in its own commit.
+2. 0.4.0.
+3. The accessible name includes the place.
+
 
 1. **Recording upstream as merged.** Proposed: after the port, run `git merge
    -s ours upstream/master` in its own commit. That records the ancestry
