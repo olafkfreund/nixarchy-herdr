@@ -158,7 +158,7 @@ check "4 control characters" grep -qFx 'a[201~bcd' "$FAKE_LOG" ||
 # the list itself fails as unreachable; only what ssh was handed is checked.
 reset
 out=$("$script" --host h1 list)
-# shellcheck disable=SC2329 # called through check
+# shellcheck disable=SC2317,SC2329 # called through check; older shellcheck says SC2317
 ssh_told_no_forwarding() {
   grep -qFx ForwardAgent=no "$FAKE_LOG" && grep -qFx PermitLocalCommand=no "$FAKE_LOG" &&
     [[ $out == *unreachable* ]]
@@ -210,7 +210,7 @@ mkdir -p "$cache/keep"
 : > "$cache/keep.txt"
 chmod 644 "$cache/keep.txt"
 out=$("$script" demo on)
-# shellcheck disable=SC2329 # called through check
+# shellcheck disable=SC2317,SC2329 # called through check; older shellcheck says SC2317
 cache_left_alone() {
   [[ -d $cache/keep && $(stat -c %a "$cache/keep.txt") == 644 ]]
 }
@@ -230,7 +230,7 @@ for ((i = 0; i < 50; i++)); do
   [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null && break
   sleep 0.1
 done
-# shellcheck disable=SC2329 # called through check
+# shellcheck disable=SC2317,SC2329 # called through check; older shellcheck says SC2317
 prompt_gone() {
   [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null
 }

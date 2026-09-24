@@ -274,6 +274,13 @@ Then check these by hand after the plugin is updated:
 
 Record the results in the PR.
 
+**Correction (2026-09-24, first CI run):**
+
+- The runner's older shellcheck reports indirectly-called test functions as
+  SC2317. Local shellcheck 0.11 reports them as SC2329.
+- The three existing `disable=SC2329` lines in `tests/herdr-sessions.sh` now
+  disable both codes.
+
 ## Rollback
 
 Each step is its own commit, so `git revert <sha>` undoes one change. After
