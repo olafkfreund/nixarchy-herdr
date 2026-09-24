@@ -17,7 +17,8 @@ a keybind, in the Omarchy shell. Across machines, not just this one.
 Built on [jankeesvw/omarchy-herdr](https://github.com/jankeesvw/omarchy-herdr)
 (MIT), which is where the bar widget, its states and its pinned panel come
 from. The herdr logo is from [herdrdev/herdr](https://github.com/herdrdev/herdr)
-(Apache-2.0) and is used to identify herdr.
+(Apache-2.0, see [assets/LICENSE-herdr](assets/LICENSE-herdr)) and is used to
+identify herdr.
 
 Herdr runs one server per named session. They are easy to start and they never
 stop by themselves, because closing a window detaches rather than ends the
@@ -328,4 +329,6 @@ Your herdr sessions are untouched by removing the plugin - they live in
 
 MIT. Copyright (c) 2026 Jankees van Woezik and (c) 2026 olafkfreund; see
 [LICENSE](LICENSE). The herdr logo in `assets/herdr-logo.svg` and
-`assets/herdr-mark.svg` is from herdrdev/herdr under Apache-2.0.
+`assets/herdr-mark.svg` is from herdrdev/herdr under Apache-2.0; see
+[assets/LICENSE-herdr](assets/LICENSE-herdr). The logo is unchanged; the mark
+is the same drawing in white, cropped, without the background.
