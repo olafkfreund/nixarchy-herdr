@@ -54,17 +54,14 @@ Item {
     return screens.length > 0 ? screens[0] : null
   }
 
-  // The menu is read from further away than a bar dropdown, so it sizes
-  // itself to the screen it opens on rather than to fixed numbers. scaleH is
-  // that screen's height in logical pixels - Hyprland has already divided by
-  // the monitor's scale, so a 4K panel at scale 2 counts as 1080. Text is
-  // 1.25x on 1080 and follows the height between 1.0x and 2.0x; the card
-  // takes 45% of the width, within bounds. Style.font and Style.space still
-  // carry the theme's own sizes, and these factors multiply them.
-  readonly property real scaleH: root.targetScreen ? root.targetScreen.height : 1080
-  readonly property real textScale: Math.max(1.0, Math.min(2.0, 1.25 * scaleH / 1080))
-  readonly property int cardWidth: Math.max(Style.space(560),
-                                            Math.min(Style.space(1400), Math.round(panel.width * 0.45)))
+  // The menu takes its sizes from the theme - Style.font for text,
+  // Style.space for the card - like the rest of the desktop, and Hyprland's
+  // per-monitor scale does the rest. An earlier version also multiplied them
+  // by the screen's height, which made the menu about 1.7x too large on a
+  // 1440p panel; don't bring that back. textScale stays at 1.0 because the
+  // rows and HerdrModel read it.
+  readonly property real textScale: 1.0
+  readonly property int cardWidth: Style.space(760)
 
   // Plugin lifecycle hooks. The host calls open(payloadJson) after
   // `omarchy-shell shell summon nixarchy.herdr ...` and close() when hidden.
@@ -283,8 +280,9 @@ Item {
 
     BorderSurface {
       id: surface
-      // cardWidth's floor can exceed a narrow screen; the gaps win.
-      width: Math.min(root.cardWidth, panel.width - Style.gapsOut * 2)
+      // On a narrow screen the card gives way: at most 60% of it, and never
+      // past the gaps.
+      width: Math.min(root.cardWidth, Math.round(panel.width * 0.6), panel.width - Style.gapsOut * 2)
       height: Math.min(card.bodyHeight + padding * 2
                        + Border.top(borderSpec) + Border.bottom(borderSpec)
                        + (root.inputOpen ? newRow.height + Style.space(6) : 0),
