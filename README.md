@@ -31,9 +31,9 @@ session. So they pile up unseen, on more than one machine.
 ## The menu
 
 `SUPER + SHIFT + H` opens it on the screen you are working on, and the same
-chord or `Esc` closes it. Its size and text follow that screen: text grows
-with the screen's height, and the card takes a bit under half its width, within
-set limits. It lists this machine's sessions first, then each
+chord or `Esc` closes it. Its text and width follow your theme's font size
+and the monitor's scale, like the rest of the desktop, and it stays below the
+bar. It lists this machine's sessions first, then each
 host in `~/.config/omarchy/herdr.json`, with every remote row named
 `host · session`. The title line says how each host answered: `●` something
 running, `○` nothing running, `–` no answer.
