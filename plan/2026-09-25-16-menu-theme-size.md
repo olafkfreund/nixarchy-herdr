@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 16
 spec: spec/2026-09-25-16-menu-theme-size.md
 ---
