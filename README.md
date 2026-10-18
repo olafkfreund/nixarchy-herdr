@@ -203,7 +203,8 @@ keeps the theme's urgent colour either way. The same entries in
 - **Click a row** (or `Enter`, or `o`) to open that session. A session shows at
   most one window, because two windows on one session mirror each other, so
   this focuses the window it already has, wherever it is, and only opens a new
-  one when there is none. Without a window one is started, in foot. A terminal
+  one when there is none. Without a window one is started in the desktop's
+  default terminal (`xdg-terminal-exec`), or foot without it. A terminal
   that runs all its windows in one process, like ghostty or footclient, cannot
   say which of them holds the session, so there "open" starts a new window
   rather than guessing.
@@ -334,8 +335,8 @@ List other machines, by the names your `~/.ssh/config` knows them as:
 in `~/.config/omarchy/herdr.json`. The file is watched, so an edit applies
 while the menu is open. No file means this machine only.
 
-**This machine** needs `herdr`, `jq`, `hyprctl`, `foot` (or
-`xdg-terminal-exec`) and `ss` from iproute2, which the kill button uses to find
+**This machine** needs `herdr`, `jq`, `hyprctl`, `xdg-terminal-exec` (or
+`foot`) and `ss` from iproute2, which the kill button uses to find
 a session's server.
 
 **Each remote host** needs `bash`, `jq` and `herdr` on the ssh user's `PATH`,

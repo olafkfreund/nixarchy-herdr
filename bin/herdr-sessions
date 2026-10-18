@@ -243,7 +243,8 @@ window_map() {
   # Only a process that owns exactly one window is matched. A terminal that
   # serves every window from one process (ghostty, footclient) cannot say which
   # of them is showing herdr, and focusing the wrong one is worse than opening
-  # a new one. Foot, which the launcher uses, is one process per window.
+  # a new one. Kitty and foot, as the launcher starts them, are one process per
+  # window.
   declare -A window_of_pid=()
   local pid address workspace
   while IFS=$'\t' read -r pid address workspace; do
@@ -602,10 +603,9 @@ show_session() {
   [[ -z $HOST ]] || herdr_cmd+=(--remote "$HOST")
   [[ $name == default ]] || herdr_cmd+=(--session "$name")
 
-  # Foot by name rather than through xdg-terminal-exec: the app id is what
-  # window rules and the window matching above key off, and a terminal chosen
-  # from the desktop's list is not guaranteed to take one. xdg-terminal-exec
-  # stays as the fallback for a machine without foot.
+  # The desktop's own terminal through xdg-terminal-exec, which passes the app
+  # id on through the terminal's X-TerminalArgAppId (kitty: --class); window
+  # rules key off it. Foot by name is the fallback for a machine without it.
   local -a launch=()
   if command -v uwsm-app >/dev/null 2>&1; then
     launch=(setsid uwsm-app --)
@@ -613,10 +613,10 @@ show_session() {
     launch=(setsid)
   fi
 
-  if command -v foot >/dev/null 2>&1; then
-    launch+=(foot "--app-id=$APP_ID" "--working-directory=$dir" -e "${herdr_cmd[@]}")
-  elif command -v xdg-terminal-exec >/dev/null 2>&1; then
+  if command -v xdg-terminal-exec >/dev/null 2>&1; then
     launch+=(xdg-terminal-exec "--app-id=$APP_ID" "--dir=$dir" -- "${herdr_cmd[@]}")
+  elif command -v foot >/dev/null 2>&1; then
+    launch+=(foot "--app-id=$APP_ID" "--working-directory=$dir" -e "${herdr_cmd[@]}")
   else
     return 1
   fi
