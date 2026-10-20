@@ -4,6 +4,7 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // The herd on a keybind: the same card the bar widget drops down, summoned
@@ -31,9 +32,9 @@ Item {
   readonly property bool pinned: false
   readonly property bool pinnable: false
   readonly property var activeCard: card
-  readonly property color foreground: Color.foreground
-  readonly property color accent: Color.accent
-  readonly property color urgent: Color.urgent
+  readonly property color foreground: Commons.Color.foreground
+  readonly property color accent: Commons.Color.accent
+  readonly property color urgent: Commons.Color.urgent
   readonly property string fontFamily: Style.font.family
   function togglePin() {}
 
@@ -267,7 +268,7 @@ Item {
 
     Rectangle {
       anchors.fill: parent
-      color: Color.menu.scrim
+      color: Commons.Color.menu.scrim
     }
 
     // Clicking away closes, the way every summoned surface on this desktop
@@ -289,8 +290,8 @@ Item {
                        panel.height - Style.gapsOut * 2)
       anchors.horizontalCenter: parent.horizontalCenter
       y: Math.max(Style.gapsOut, Math.round((panel.height - height) / 2))
-      color: Color.menu.background
-      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border,
+      color: Commons.Color.menu.background
+      borderSpec: Border.surfaceSpec("menu", "border", Commons.Color.menu.border,
                                      Math.max(1, Style.space(2)))
       padding: Style.spacing.panelPadding
       radius: Style.cornerRadius
@@ -433,7 +434,7 @@ Item {
                 + ". Send anyway? It will arrive in the middle of what it is doing."
               : ""
             confirmText: "Send"
-            background: Color.background
+            background: Commons.Color.background
             foreground: root.foreground
             fontFamily: root.fontFamily
             onCanceled: root.closeConfirm()

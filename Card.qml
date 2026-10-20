@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Everything inside the card: the herd, the keys that walk it, and the one
@@ -718,7 +719,7 @@ PanelKeyCatcher {
       // is whatever was passed to `herdr --session` - is stripped instead.
       message: panel.plain(panel.confirmMessage())
       confirmText: panel.confirmAction === "delete" ? "Delete" : "Kill"
-      background: Color.background
+      background: Commons.Color.background
       foreground: panel.foreground
       fontFamily: panel.fontFamily
       onCanceled: panel.closeConfirm()
