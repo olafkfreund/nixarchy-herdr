@@ -148,6 +148,7 @@ console.log('PASS: agentPlace names the workspace and tab that exist');
 {
   const calls = [];
   context.Color = { pick: () => '', flatColor: (...args) => { calls.push(args); return 'flat'; } };
+  context.Commons = { Color: context.Color }; // Commons.Color since Qt 6.12 (olafkfreund/nixarchy#1381)
   assert.equal(context.themeColor('herdr.done', '#5FA46B'), '#5FA46B');
   assert.equal(calls.length, 0, 'flatColor must not be called when the theme sets nothing');
   context.Color.pick = () => 'accent';
