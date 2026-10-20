@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 
 // Session state, actions and polling for one surface that shows the herd.
 // The bar widget and the menu each own one, and hand it to Card.qml as `panel`.
@@ -20,9 +21,9 @@ Item {
   // surface says how big its text should be.
   readonly property real textScale: host && host.textScale > 0 ? host.textScale : 1.0
   readonly property var activeCard: host ? host.activeCard : null
-  readonly property color foreground: host ? host.foreground : Color.foreground
-  readonly property color accent: host ? host.accent : Color.accent
-  readonly property color urgent: host ? host.urgent : Color.urgent
+  readonly property color foreground: host ? host.foreground : Commons.Color.foreground
+  readonly property color accent: host ? host.accent : Commons.Color.accent
+  readonly property color urgent: host ? host.urgent : Commons.Color.urgent
   readonly property string fontFamily: host ? host.fontFamily : Style.font.family
 
   function close() { if (host) host.close() }
@@ -60,8 +61,8 @@ Item {
   // or an eight-digit hex means what it means everywhere else, and a typo
   // lands on the fallback instead of on black.
   function themeColor(key, fallback) {
-    var value = Color.pick(key, "")
-    return value ? Color.flatColor(value, fallback) : fallback
+    var value = Commons.Color.pick(key, "")
+    return value ? Commons.Color.flatColor(value, fallback) : fallback
   }
   readonly property color finished: themeColor("herdr.done", "#5FA46B")
   readonly property color working: themeColor("herdr.working", "#D6A84B")
