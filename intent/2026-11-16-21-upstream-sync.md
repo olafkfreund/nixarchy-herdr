@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 21
 author: olafkfreund
 ---
@@ -105,3 +105,5 @@ apply:
    - The herdr-app commits (`c22668d`, `8634049`, `83007e3`) stay outside it,
      for #22.
    - Codex and agy both agree.
+
+Resolved on approval (2026-11-16): the recommendation is taken.
