@@ -6,7 +6,8 @@ intent: intent/2026-11-16-21-upstream-sync.md
 
 # Spec: bring in upstream's umask and new-shell badge fixes
 
-Implements the approved intent. Already resolved there: record the sync with
+Implements the approved intent. This is revision 2, after the Codex review of
+revision 1 (gpt-6.1-sol). Already resolved there: record the sync with
 `git merge -s ours b00a6ca` after #20 merges.
 
 Line numbers are on `origin/master` `affd985`. Where #20 (PR #24) changes the
@@ -45,11 +46,16 @@ README says so in one line.
     `without_herdr_env "${launch[@]}" … &`, followed by `pid=$!`) becomes:
 
     ```bash
-    ( umask "$INHERITED_UMASK" && exec without_herdr_env "${launch[@]}" ) >/dev/null 2>&1 &
+    ( umask "$INHERITED_UMASK" && without_herdr_env "${launch[@]}" ) >/dev/null 2>&1 &
     ```
 
-  - `exec` keeps the subshell's PID as the launcher's PID, so #20's 0.3 s
-    launcher check and `disown "$pid"` work unchanged.
+  - **No `exec`.** `without_herdr_env` is a bash function, and `exec` only
+    runs executables, so `exec` would fail every launch with exit 127. Codex
+    reproduced that in the revision 1 review.
+  - **#20's launcher check keeps working.** `$!` is the subshell, which runs
+    the helper in the foreground and exits with its status. So the 0.3 s
+    check (`kill -0`, `wait`, `disown`) sees the launcher failing or still
+    running, as before.
 - **The rest stays private.** The cache directory, the demo flag and #20's run
   directory are created by the script under 077. #20's `run_dir_init` also
   sets `umask 077` in its own subshell.
@@ -68,7 +74,10 @@ the glyph and the badge shrink together.
   - replace `iconComponent: Component { Item { … } }` (`:184`) with
     `hasVisualContent: true` and the same `Item { anchors.fill: parent; … }`
     as a direct child of the button;
-  - add upstream's one-line comment on why.
+  - add upstream's one-line comment on why;
+  - add `scale: button.pressScale` to that `Item`. The shell applies
+    `pressScale` only to its own content item (`BarIconButton.qml:36-45`), so
+    without it the artwork would stop shrinking when the button is pressed.
 - **What stays as it is:**
   - the herdr mark (`Image` + `MultiEffect`, tinted `root.barForeground`);
   - the badge: anchors, ratios, `herd.badgeColor()`, the rim in
@@ -79,6 +88,13 @@ the glyph and the badge shrink together.
   badge sits top-right. Only the containment change is ported.
 - **Bar sizing is unchanged.** `barContentWidth` (`:109`) still sizes the slot
   and the open-panel indicator (`:115-118`).
+- **The rest of the button keeps working** (checked against the shell source
+  in the Codex review):
+  - `hasVisualContent: true` is needed, or the button hides without an
+    `iconComponent` (`BarIconButton.qml:31`, `WidgetButton.qml:93`).
+  - The new children take no pointer input, so hover and clicks still reach
+    the button's `MouseArea` (`WidgetButton.qml:169-191`).
+  - The open-panel indicator is drawn by the bar itself, at `z: 50`.
 
 ### U3. Upstream history
 
@@ -97,8 +113,8 @@ non-merge commits in `49fca4a..b00a6ca`, how it was handled:
 
 After it:
 
-- `git log HEAD..upstream/master --no-merges` lists only `c22668d`, `8634049`
-  and `83007e3` (herdr-app, for #22).
+- `git log --reverse HEAD..upstream/master --no-merges` lists only `c22668d`,
+  `8634049` and `83007e3`, in that order (herdr-app, for #22).
 - The branch is rebased onto master after #24 merges, so `43e61b5`'s and
   `b4dceeb`'s coverage is really in the tree when they are recorded.
 
@@ -149,8 +165,12 @@ After it:
 - **The script stays private.** Under `umask 022`, `demo on` still creates the
   cache directory with mode 700, and the demo file with no group or other
   bits.
-- **#20's launcher-check cases still pass.** The PID passed to the check is
-  still the launcher's.
+- **#20's launcher-check cases still pass:** a launcher that fails at once,
+  and one that succeeds at once.
+- **A launcher still running after the 0.3 s check** (a fake that sleeps 1 s)
+  gives `ok:true`, logs the inherited umask, and is cleaned up by the test.
+- **The run directory stays private under `umask 022`:** it is mode 700 while
+  a slow fake list is running.
 
 **Static checks:**
 
@@ -162,8 +182,8 @@ After it:
 **History:**
 
 - `git merge-base --is-ancestor b00a6ca HEAD` exits 0.
-- `git log HEAD..upstream/master --no-merges --format=%h` prints exactly
-  `c22668d`, `8634049` and `83007e3`.
+- `git log --reverse HEAD..upstream/master --no-merges --format=%h` prints
+  exactly `c22668d`, `8634049`, `83007e3`.
 
 **Live, after merge**, with the pin bump and p620 deploy (owner's OK) and
 razer:
@@ -172,6 +192,9 @@ razer:
   states: blocked (red), done (green), working (amber), and a two-digit count.
   It disappears when everything is idle.
 - Hover, click and middle click on the bar button still work.
+- The press animation still shrinks the icon.
+- The open-panel indicator still shows.
+- The bar works in both horizontal and vertical layouts.
 - On razer, same check on its shell.
 - A session opened from the menu: `umask` in its terminal prints the shell's
   umask (normally `0022`).
