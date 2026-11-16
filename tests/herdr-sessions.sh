@@ -145,8 +145,11 @@ cat > "$tmp/bin/foot" <<'FAKE'
 printf 'foot-launched\n' >> "$FAKE_LOG"
 exit "${FAKE_FOOT_RC:-0}"
 FAKE
+# The launcher tries the desktop's terminal first (#18), so it is faked as
+# well: a test must never open a real window. Same knob as foot.
+cp "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
 chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/kill" \
-  "$tmp/bin/setsid" "$tmp/bin/uwsm-app" "$tmp/bin/foot"
+  "$tmp/bin/setsid" "$tmp/bin/uwsm-app" "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
 
 failed=0
 # check <case> <command...>: the command's status is the verdict, its output
