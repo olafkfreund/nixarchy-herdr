@@ -243,6 +243,19 @@ omarchy plugin validate .
 - **Context:** codex and agy may also open the changed files in full in the
   repo, for surrounding code.
 
+## Deviations during implementation
+
+- **Review fixes to the tests (lead):**
+  - Case 54 uses `FAKE_TERM_SLEEP=5`, not 1. The test kills the fake
+    straight away, so it costs nothing, and it leaves headroom on a loaded
+    runner. Suggested by Opus and agy.
+  - Case 58 slows a snapshot, not the session list. A slow session list runs
+    before any job is tracked, so its `timeout`/herdr/`sleep` group outlived
+    the TERM by up to 4 s. Found by agy. A new check asserts that no snapshot
+    child is left.
+- **History merge:** it was redone after these fixes, so it is still the
+  last commit.
+
 ## Rollback
 
 - **Before merge:** delete the branch.

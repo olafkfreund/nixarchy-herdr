@@ -739,7 +739,7 @@ check "53 immediate success" jq -e '.ok == true' <<<"$out"
 # A terminal still running after the launch check succeeds. Kill the fake by
 # its logged PID because show_session disowns it.
 reset
-out=$(umask 022; FAKE_TERM_SLEEP=1 "$script" open s1)
+out=$(umask 022; FAKE_TERM_SLEEP=5 "$script" open s1)
 term_pid=$(awk '$1 == "term-pid" { print $2; exit }' "$FAKE_LOG")
 check "54 live terminal succeeds" jq -e '.ok == true' <<<"$out"
 check "54 live terminal inherits umask" grep -qFx 'umask-seen 0022' "$FAKE_LOG"
@@ -765,7 +765,9 @@ check "57 demo enabled" jq -e '.ok == true' <<<"$out"
 "$script" demo off >/dev/null
 
 reset
-(umask 022; exec env FAKE_LIST_SLEEP=30 "$script" list >/dev/null 2>&1) &
+# A slow snapshot, not a slow session list: snapshot jobs are tracked, so the
+# TERM below reaches their whole tree and nothing outlives the case.
+(umask 022; exec env FAKE_SNAPSHOT_SLEEP_s1=30 "$script" list >/dev/null 2>&1) &
 pid=$!
 run_dir=""
 for ((i = 0; i < 50; i++)); do
@@ -779,5 +781,8 @@ kill -TERM "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
 check "58 run directory removed" test -z \
   "$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print)"
+surviving=$(awk '$1 == "snapshot-pid" { print $3 }' "$FAKE_LOG" |
+  while read -r child; do kill -0 "$child" 2>/dev/null && printf '%s\n' "$child"; done)
+check "58 no snapshot child left" test -z "$surviving"
 
 exit "$failed"
