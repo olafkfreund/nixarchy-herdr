@@ -41,6 +41,7 @@ printf '%s\n' "$@" >> "$FAKE_LOG"
 [[ ${1-} == --session ]] && shift 2
 case "$1 ${2-}" in
   "session list")
+    sleep "${FAKE_LIST_SLEEP:-0}" >/dev/null 2>&1
     printf '{"sessions":[{"name":"s1","default":false,"running":true,"session_dir":"/nonexistent"}]}\n' ;;
   "api snapshot")
     # stdout off the sleep, or a killed fake would leave it holding the pipe.
@@ -55,10 +56,22 @@ case "$1 ${2-}" in
     [[ -z ${FAKE_PROMPT_SLEEP-} ]] || exec sleep "$FAKE_PROMPT_SLEEP" >/dev/null 2>&1
     exit "${FAKE_PROMPT_RC:-0}" ;;
   "agent get")
+    sleep "${FAKE_GET_SLEEP:-0}" >/dev/null 2>&1
     # The pad goes first, so an answer cut short at a cap has no status left.
     pad=$(head -c "${FAKE_AGENT_GET_BYTES:-0}" /dev/zero | tr '\0' x)
     printf '{"result":{"agent":{"pad":"%s","agent_status":"%s"}}}\n' "$pad" "${FAKE_AGENT_STATUS:-idle}" ;;
-  "agent read") printf '%s' "${FAKE_SCREEN-screen}" ;;
+  "agent read")
+    sleep "${FAKE_READ_SLEEP:-0}" >/dev/null 2>&1
+    if [[ -n ${FAKE_SCREEN_BYTES-} ]]; then
+      head -c "$FAKE_SCREEN_BYTES" /dev/zero | tr '\0' x
+      printf '%s' "${FAKE_SCREEN_SUFFIX-}"
+    else
+      printf '%s' "${FAKE_SCREEN-screen}"
+    fi ;;
+  "agent focus")
+    if [[ ${FAKE_IGNORE_TERM-} == 1 ]]; then trap '' TERM; fi
+    exec sleep "${FAKE_FOCUS_SLEEP:-0}" ;;
+  "session delete") exit 0 ;;
   *) exit 1 ;;
 esac
 FAKE
@@ -72,6 +85,7 @@ cat > "$tmp/bin/ssh" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$@" >> "$FAKE_LOG"
 [[ -n ${FAKE_SSH_RUN-} ]] || exit 0
+sleep "${FAKE_SSH_SLEEP:-0}" >/dev/null 2>&1
 while [[ $# -gt 0 && $1 != -- ]]; do shift; done
 shift 2
 [[ -z ${FAKE_SSH_PIPE-} ]] || { bash -c "$*" | head -c 1 >/dev/null; exit; }
@@ -82,9 +96,26 @@ FAKE
 # call, dispatch included, does nothing.
 cat > "$tmp/bin/hyprctl" <<'FAKE'
 #!/bin/sh
-if [ "$1" = clients ]; then cat "$FAKE_CLIENTS"; else echo "[]"; fi
+if [ "$1" = clients ]; then
+  sleep "${FAKE_CLIENTS_SLEEP:-0}"
+  cat "$FAKE_CLIENTS"
+else echo "[]"; fi
 FAKE
-chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl"
+cat > "$tmp/bin/setsid" <<'FAKE'
+#!/bin/bash
+exec "$@"
+FAKE
+cat > "$tmp/bin/uwsm-app" <<'FAKE'
+#!/bin/bash
+[[ ${1-} == -- ]] && shift
+exec "$@"
+FAKE
+cat > "$tmp/bin/foot" <<'FAKE'
+#!/bin/bash
+printf 'foot-launched\n' >> "$FAKE_LOG"
+FAKE
+chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" \
+  "$tmp/bin/setsid" "$tmp/bin/uwsm-app" "$tmp/bin/foot"
 
 failed=0
 # check <case> <command...>: the command's status is the verdict, its output
@@ -100,7 +131,9 @@ reset() {
   echo "[]" > "$FAKE_CLIENTS"
   unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS \
     FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN FAKE_SSH_PIPE FAKE_PROMPT_SLEEP \
-    FAKE_AGENTS FAKE_TABS
+    FAKE_AGENTS FAKE_TABS FAKE_FOCUS_SLEEP FAKE_GET_SLEEP FAKE_READ_SLEEP \
+    FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
+    FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE
 }
 
 # fake_client <args...>: a live process with that command line, for the window
@@ -282,5 +315,94 @@ out=$(FAKE_TABS='[{"tab_id":"w1:t1","label":"1 · claude › Code review","numbe
   "$script" list)
 check "13 auto-titled tabs" jq -e '[.sessions[0].agentList[] | .tab] == ["", "", "release"]' <<<"$out" ||
   printf '  got: %s\n' "$(jq -c '[.sessions[0].agentList[]? | .tab]' <<<"$out")"
+
+# Step 1: each action deadline has its own error, including timeout's 137
+# path when a child ignores TERM.
+reset
+start=$SECONDS
+out=$(FAKE_FOCUS_SLEEP=30 "$script" focus s1 w1:p1)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "14 focus deadline" jq -e --argjson took "$took" \
+  '.error == "timed out: focus" and $took < 6' <<<"$out" ||
+  printf '  took %ss, got: %.200s\n' "$took" "$out"
+
+reset
+start=$SECONDS
+out=$(FAKE_FOCUS_SLEEP=30 FAKE_IGNORE_TERM=1 "$script" focus s1 w1:p1)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "15 focus KILL deadline" jq -e --argjson took "$took" \
+  '.error == "timed out: focus" and $took < 7' <<<"$out" ||
+  printf '  took %ss, got: %.200s\n' "$took" "$out"
+
+reset
+out=$(printf hi | FAKE_GET_SLEEP=30 "$script" prompt s1 w1:p1)
+check "16 get deadline" jq -e '.error == "timed out: reading the reply"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$(printf hi | FAKE_READ_SLEEP=30 "$script" prompt s1 w1:p1)
+check "17 read deadline" jq -e '.error == "timed out: reading the reply"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$(printf hi | FAKE_PROMPT_RC=124 "$script" prompt s1 w1:p1)
+check "18 prompt wait timeout" jq -e '.ok == true and .status == "timeout"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$(FAKE_SSH_RUN=1 FAKE_SSH_SLEEP=30 "$script" --host razer delete s1)
+check "19 remote action deadline" jq -e '.error == "timed out: delete on razer"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$("$script" open s1)
+check "20 no window launches" jq -e '.ok == true' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+start=$SECONDS
+out=$(FAKE_CLIENTS_SLEEP=30 "$script" open s1)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "21 slow window lookup launches" jq -e --argjson took "$took" \
+  '.ok == true and $took < 5' <<<"$out" ||
+  printf '  took %ss, got: %.200s\n' "$took" "$out"
+
+reset
+out=$(printf hi | FAKE_SCREEN_BYTES=200000 "$script" prompt s1 w1:p1)
+check "22 long screen intact" jq -e '.ok == true and (.output | length) == 200000' <<<"$out" ||
+  printf '  output length: %s\n' "$(jq -r '.output | length' <<<"$out")"
+
+reset
+out=$(printf hi | FAKE_SCREEN_BYTES=$((2 * 1024 * 1024 - 1)) FAKE_SCREEN_SUFFIX=é \
+  "$script" prompt s1 w1:p1)
+check "23 split UTF-8 screen" jq -e '.ok == true and (.output | endswith("\ufffd"))' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+start=$SECONDS
+out=$(FAKE_SSH_RUN=1 HERDR_TEST_NEW_DEADLINE=3 "$script" --host razer new fresh /tmp)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "24 remote new deadline" jq -e --argjson took "$took" \
+  '.error == "session started, but razer never reported it running" and $took < 12' <<<"$out" ||
+  printf '  took %ss, got: %.200s\n' "$took" "$out"
+
+reset
+out=$(FAKE_LIST_SLEEP=30 "$script" new fresh)
+check "25 name check deadline" jq -e '.error == "timed out: checking the name"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$(FAKE_LIST_SLEEP=30 "$script" kill s1)
+check "26 socket lookup deadline" jq -e '.error == "timed out: finding the server"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$(FAKE_LIST_SLEEP=30 "$script" delete s1)
+check "27 delete unaffected by list" jq -e '.ok == true' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
 
 exit "$failed"

@@ -145,10 +145,17 @@ ssh_options() {
   fi
 }
 
+bounded() {
+  local s=$1; shift
+  timeout -k 1 "$s" "$@"
+}
+
+timed_out() { [[ $1 == 124 || $1 == 137 ]]; }
+
 ssh_run() {
   local -a SSH_OPTS
   ssh_options
-  timeout "${2:-8}" ssh "${SSH_OPTS[@]}" -- "$HOST" "$1"
+  bounded "${2:-8}" ssh "${SSH_OPTS[@]}" -- "$HOST" "$1"
 }
 
 # A herdr started from inside a herdr pane refuses to run ("nested herdr is
@@ -234,7 +241,8 @@ window_map() {
   command -v hyprctl >/dev/null 2>&1 || return 0
 
   local clients
-  clients=$(hyprctl clients -j 2>/dev/null | head -c "$((WINDOWS_BYTE_CAP + 1))") || true
+  clients=$(bounded 2 hyprctl clients -j 2>/dev/null |
+    head -c "$((WINDOWS_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || return 0
   [[ -n $clients ]] || return 0
   # Window titles are set by whatever is running in them. Without a ceiling a
   # single window could decide how much this costs.
@@ -261,10 +269,12 @@ window_map() {
   # pgrep rather than ps: it reads the whole of /proc/<pid>/cmdline, where ps
   # cuts the line at COLUMNS and can drop the --session off the end.
   declare -A args_of=()
+  local processes
+  processes=$(bounded 2 pgrep -af herdr 2>/dev/null) || return 0
   while read -r pid args; do
     [[ $pid =~ ^[0-9]+$ ]] || continue
     args_of[$pid]=$args
-  done < <(pgrep -af herdr 2>/dev/null)
+  done <<< "$processes"
 
   declare -A emitted=()
 
@@ -562,7 +572,7 @@ show_session() {
 
   local address workspace
   IFS=$'\t' read -r address workspace < <(
-    window_map | awk -F'\t' -v want="$HOST/$name" '$1 == want { print $2 "\t" $3; exit }')
+    window_map | awk -F'\t' -v want="$HOST/$name" '$1 == want { print $2 "\t" $3; exit }' || true)
 
   # Both values are spliced into a Lua expression, so they are checked for
   # shape first rather than escaped. A window address is hex; a workspace name
@@ -652,11 +662,14 @@ cmd_focus() {
   local -a focus_cmd=(herdr)
   [[ $name == default ]] || focus_cmd+=(--session "$name")
   focus_cmd+=(agent focus "$pane")
+  local rc=0
   if [[ -n $HOST ]]; then
-    ssh_run "$(printf '%q ' "${focus_cmd[@]}")" </dev/null >/dev/null 2>&1 || true
+    ssh_run "$(printf '%q ' "${focus_cmd[@]}")" 4 </dev/null >/dev/null 2>&1 || rc=$?
   else
-    "${focus_cmd[@]}" >/dev/null 2>&1 || true
+    bounded 4 "${focus_cmd[@]}" >/dev/null 2>&1 || rc=$?
   fi
+  timed_out "$rc" && die "timed out: focus"
+  (( rc == 0 )) || die "herdr could not focus that pane"
 
   show_session "$name" || die "no terminal available"
   printf '{"ok":true}\n'
@@ -666,17 +679,24 @@ cmd_focus() {
 
 # Whether a session of that name exists on the host this runs against,
 # running or not. An unreachable host counts as "cannot tell", which refuses.
-# Asked through this script's own list, so a leftover remote-client directory
-# does not count as a session.
+# Read herdr's complete list, including names beyond the display cap.
 session_exists() {
-  local json
+  local json rc=0
   if [[ -n $HOST ]]; then
-    json=$(ssh_run "bash -s -- list --no-windows" < "$SCRIPT" 2>/dev/null | head -c "$((TOTAL_BYTE_CAP + 1))") || true
+    json=$(ssh_run "herdr session list --json" 4 </dev/null 2>/dev/null |
+      head -c "$((SESSIONS_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   else
-    json=$(cmd_list --no-windows 2>/dev/null) || true
+    json=$(bounded 4 herdr session list --json 2>/dev/null |
+      head -c "$((SESSIONS_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   fi
-  printf '%s' "$json" | jq -e '.ok == true' >/dev/null 2>&1 || return 2
-  printf '%s' "$json" | jq -e --arg name "$1" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1
+  timed_out "$rc" && die "timed out: checking the name"
+  (( rc == 0 )) || return 2
+  over_byte_cap "$json" "$SESSIONS_BYTE_CAP" && return 2
+  printf '%s' "$json" | jq -e --arg name "$1" '
+    (.sessions | type == "array") and any(.sessions[]; .name == $name)' >/dev/null 2>&1 || {
+      printf '%s' "$json" | jq -e '.sessions | type == "array"' >/dev/null 2>&1 || return 2
+      return 1
+    }
 }
 
 # A new session and nothing else: a name that already exists is refused rather
@@ -705,13 +725,14 @@ cmd_new() {
   show_session "$name" "$launch_dir" || die "no terminal available"
 
   if [[ -n $HOST && -n $dir ]]; then
-    local i running=""
-    for ((i = 0; i < 20; i++)); do
+    local running="" deadline=$((SECONDS + ${HERDR_TEST_NEW_DEADLINE:-30}))
+    while (( deadline - SECONDS >= 8 )); do
       # Capped like the local list: the other host decides how much it sends.
       running=$(ssh_run "herdr session list --json" </dev/null 2>/dev/null |
         head -c "$((SESSIONS_BYTE_CAP + 1))" |
         jq -r --arg name "$name" '.sessions[]? | select(.name == $name) | .running' 2>/dev/null) || true
       [[ $running == true ]] && break
+      (( deadline - SECONDS >= 8 )) || break
       sleep 0.5
     done
     [[ $running == true ]] || die "session started, but $HOST never reported it running"
@@ -788,37 +809,43 @@ cmd_prompt() {
   trap 'kill -TERM "$child" 2>/dev/null; exit 143' TERM INT HUP
   wait "$child" || rc=$?
   trap - TERM INT HUP
-  # 124 is the timeout running out, which still ends in reading the screen.
+  # A timed-out wait still ends in reading the screen.
   # 255 is ssh itself failing, so there is no agent to ask.
   (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
 
   # The agent's answer is capped like the screen. One cut short fails jq below
   # and counts as no status, the same as an agent that did not answer.
-  local agent screen
+  local agent screen read_rc=0
   if [[ -n $HOST ]]; then
-    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" </dev/null 2>/dev/null |
-      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
-    screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" \
-      </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" 4 </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
+    timed_out "$read_rc" && die "timed out: reading the reply"
+    read_rc=0
+    screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" 4 \
+      </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
   else
-    agent=$("${base[@]}" agent get "$pane" </dev/null 2>/dev/null |
-      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
-    screen=$("${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
-      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    agent=$(bounded 4 "${base[@]}" agent get "$pane" </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
+    timed_out "$read_rc" && die "timed out: reading the reply"
+    read_rc=0
+    screen=$(bounded 4 "${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
   fi
-  over_byte_cap "$screen" "$SNAPSHOT_BYTE_CAP" && screen=${screen:0:SNAPSHOT_BYTE_CAP}
+  timed_out "$read_rc" && die "timed out: reading the reply"
+  over_byte_cap "$screen" "$SNAPSHOT_BYTE_CAP" && screen=$(printf '%s' "$screen" | head -c "$SNAPSHOT_BYTE_CAP") || true
 
   local status
   status=$(printf '%s' "$agent" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || true
   [[ -n $status ]] || [[ -n $screen ]] || die "could not reach that agent"
   # Any other exit is herdr refusing the prompt. The screen would show
   # whatever was there before, which reads as an answer when nothing was sent.
-  if (( rc != 0 && rc != 124 )); then
+  if (( rc != 0 )) && ! timed_out "$rc"; then
     [[ $status == blocked ]] && die "the agent is waiting on a question; nothing was sent"
     die "herdr did not start the prompt (agent is ${status:-unknown})"
   fi
-  jq -cn --arg status "${status:-timeout}" --arg output "$screen" \
-    '{ok: true, status: $status, output: $output}'
+  if timed_out "$rc"; then status=timeout; fi
+  printf '%s' "$screen" | jq -Rsc --arg status "$status" \
+    '{ok: true, status: $status, output: .}'
 }
 
 # ------------------------------------------------------------ kill / delete
@@ -847,8 +874,11 @@ server_pid_for() {
 }
 
 socket_of() {
-  herdr session list --json 2>/dev/null |
-    jq -r --arg name "$1" '.sessions[]? | select(.name == $name) | .socket_path // ""' 2>/dev/null
+  local out rc=0
+  out=$(bounded 4 herdr session list --json 2>/dev/null) || rc=$?
+  timed_out "$rc" && return "$rc"
+  (( rc == 0 )) || return 1
+  printf '%s' "$out" | jq -r --arg name "$1" '.sessions[]? | select(.name == $name) | .socket_path // ""' 2>/dev/null
 }
 
 # How a server is ended here, and the only way. `herdr session stop` asks over
@@ -863,8 +893,11 @@ cmd_kill() {
   local name="${1-}"
   valid_session_name "$name" || die "not a session name"
 
-  local pid
-  pid=$(server_pid_for "$(socket_of "$name")") || die "no running server for that session"
+  local pid socket rc=0
+  socket=$(socket_of "$name") || rc=$?
+  timed_out "$rc" && die "timed out: finding the server"
+  (( rc == 0 )) || die "no running server for that session"
+  pid=$(server_pid_for "$socket") || die "no running server for that session"
 
   # A refused signal to a process that is still there is a server this user
   # does not own; one that is gone had simply exited in the meantime.
@@ -899,8 +932,10 @@ cmd_delete() {
   # stderr is what it said went wrong, and it is the only thing that can tell
   # the panel why the row is still there; swallowing it reported a delete that
   # never happened.
-  local err
-  err=$(herdr session delete "$name" 2>&1 >/dev/null) || die "${err:-herdr could not delete that session}"
+  local err rc=0
+  err=$(bounded 8 herdr session delete "$name" 2>&1 >/dev/null) || rc=$?
+  timed_out "$rc" && die "timed out: delete"
+  (( rc == 0 )) || die "${err:-herdr could not delete that session}"
   printf '{"ok":true}\n'
 }
 
@@ -908,8 +943,11 @@ cmd_delete() {
 # lookup reads that machine's `ss` and /proc. So the whole action runs there,
 # with this script on stdin and its (already validated) arguments quoted.
 remote_action() {
-  local out
-  out=$(ssh_run "bash -s -- $(printf '%q ' "$@")" < "$SCRIPT" 2>/dev/null | head -c 4096) || true
+  local out rc=0
+  out=$(ssh_run "bash -s -- $(printf '%q ' "$@")" < "$SCRIPT" 2>/dev/null |
+    head -c 4096; exit "${PIPESTATUS[0]}") || rc=$?
+  timed_out "$rc" && die "timed out: $1 on $HOST"
+  (( rc == 0 )) || die "$HOST is unreachable"
   [[ -n $out ]] || die "$HOST is unreachable"
   printf '%s\n' "$out"
 }
