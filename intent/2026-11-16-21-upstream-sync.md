@@ -13,8 +13,9 @@ pass) after it.
 ## Problem
 
 Upstream (jankeesvw/omarchy-herdr) has fixed things since our last sync at
-`49fca4a`. #21 named four commits. Checked against current `origin/master`
-(`affd985`), two still apply:
+`49fca4a`: eight non-merge commits up to `b00a6ca`. #21 named four of them.
+Checked against current `origin/master` (`affd985`) and #20 (PR #24), two still
+apply:
 
 - **Terminals we open get a private umask** (`73b6605` upstream).
   - `bin/herdr-sessions` sets `umask 077` (`:39`) for its own files, and the
@@ -23,13 +24,19 @@ Upstream (jankeesvw/omarchy-herdr) has fixed things since our last sync at
     terminal, so every shell in the session gets 077. Files a git checkout
     creates there are unreadable by anyone else, including a container
     running as another user.
+  - Unconfirmed on this machine. Omarchy has `uwsm-app`, so the launch goes
+    `setsid uwsm-app -- <terminal>` (`:610-613`). If uwsm runs the terminal as
+    a systemd user unit, the terminal gets the user manager's umask, not
+    ours, and the problem only shows where `uwsm-app` is missing. The spec
+    checks which.
 - **The bar count shrinks to a smudge on the new Omarchy shell** (`b00a6ca`
   upstream).
   - The shell now scales whatever a widget hands it as `iconComponent` down
-    to one bar icon. `Panel.qml:184` hands it the glyph and the count badge
-    together, so the count shrinks with it.
-  - This machine runs Omarchy `edge-20261115`, which is past that shell
-    change. I haven't confirmed the smudge on screen; the live check does.
+    to one bar icon. `Panel.qml:184` hands it the glyph and the badge
+    together, so the badge's number shrinks with it.
+  - This machine runs Omarchy `edge-20261116`, whose `BarIconContent.qml`
+    does that scaling. I haven't confirmed the smudge on screen; the live
+    check does.
 
 **Already covered, so not part of #21:**
 
@@ -39,6 +46,10 @@ Upstream (jankeesvw/omarchy-herdr) has fixed things since our last sync at
   - Our script already hands snapshots to jq through files. That's the fork's
     own fix, before upstream's.
   - #20 moves the last large `--arg` (the prompt screen) to stdin.
+- **`43e61b5` (a window's client is told apart by its flags alone):**
+  - Covered by #20's D7 (`d8a1d25`), not yet by master: any other word
+    after `herdr` means it isn't a window's client.
+  - D7 also accepts `--session=`/`--remote=` and `session attach`.
 - **`448fdd1`, `ff66115`, `d0df5ea` (remotes through `herdr --machine`):**
   skipped on purpose. Decided 2026-11-16: keep `herdr.json` + ssh, which lists
   every session on each host.
@@ -48,15 +59,21 @@ Upstream (jankeesvw/omarchy-herdr) has fixed things since our last sync at
 
 ## Proposed outcome
 
-- **A terminal opened by the plugin gets the umask the shell started the
-  plugin with.** Files created in its sessions are readable as they would be
-  from any other terminal. The script's own files and run directory stay
-  private (077).
-- **On the current Omarchy shell, the bar shows the server count at its
-  normal size,** next to the glyph, with the same colours and badge as now.
-- **Upstream's history records the sync.** A `merge -s ours` of upstream at
-  `b00a6ca` marks the four commits, and the three skipped remote commits, as
-  handled. The herdr-app commits after it stay unmerged until #22.
+- **A terminal opened by the plugin gets the umask `herdr-sessions` was
+  started with,** wherever the launch path lets it.
+  - A server first started from that terminal then creates files as any other
+    terminal would. A server that is already running keeps its own umask.
+  - The script's own files (the cache, the demo flag, and from #20 the run
+    directory) stay private (077).
+- **On the current Omarchy shell, the bar badge is readable at its normal
+  size.**
+  - It keeps its current meaning: the blocked count when anything is blocked,
+    otherwise the running servers. It still disappears when everything is
+    idle.
+  - Its colours, position and two-digit counts stay as they are now.
+- **The repository records which upstream commits are handled:** ported,
+  covered, or skipped on purpose. Upstream's later herdr-app commits stay
+  visibly outstanding for #22.
 
 ## Affected users and systems
 
@@ -81,5 +98,10 @@ Upstream (jankeesvw/omarchy-herdr) has fixed things since our last sync at
 ## Open questions
 
 1. **Upstream history.** Record the sync with `git merge -s ours` at
-   `b00a6ca`, as #11 did? Recommendation: yes, at `b00a6ca` exactly, so the
-   herdr-app commits stay visible as unmerged for #22.
+   `b00a6ca`, as #11 did (`440a513`)?
+   - Recommendation: yes, at `b00a6ca` exactly, after #20 merges. That way
+     `43e61b5` and `b4dceeb`'s prompt part are really in the tree when they
+     are marked handled.
+   - The herdr-app commits (`c22668d`, `8634049`, `83007e3`) stay outside it,
+     for #22.
+   - Codex and agy both agree.
