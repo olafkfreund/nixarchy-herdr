@@ -36,6 +36,8 @@
 # shell.
 
 set -euo pipefail
+INHERITED_UMASK=$(umask)
+readonly INHERITED_UMASK
 umask 077
 
 readonly APP_ID=org.omarchy.herdr
@@ -692,7 +694,8 @@ show_session() {
   fi
 
   local pid
-  without_herdr_env "${launch[@]}" >/dev/null 2>&1 &
+  # The terminal inherits the panel's umask; this script's files stay private.
+  ( umask "$INHERITED_UMASK" && without_herdr_env "${launch[@]}" ) >/dev/null 2>&1 &
   pid=$!
   sleep 0.3
   if ! kill -0 "$pid" 2>/dev/null; then

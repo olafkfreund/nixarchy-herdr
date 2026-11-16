@@ -213,6 +213,8 @@ keeps the theme's urgent colour either way. The same entries in
   say which of them holds the session, so there "open" starts a new window
   rather than guessing. The window launch is checked for 0.3 s, which catches a
   terminal that exits at once, but only the first process of the launch chain.
+  The terminal gets the umask the panel was started with, which holds for
+  uwsm's default scope launch but not when `UWSM_APP_UNIT_TYPE=service`.
 - **Click one of the agent lines** to land on that agent rather than on
   whatever the session was last showing: its pane is focused inside the server
   first, then the window comes up. That also marks a finished agent as seen, so
