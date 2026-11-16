@@ -137,12 +137,16 @@ exec "$@"
 FAKE
 cat > "$tmp/bin/uwsm-app" <<'FAKE'
 #!/bin/bash
+printf 'uwsm-launched\n' >> "$FAKE_LOG"
 [[ ${1-} == -- ]] && shift
 exec "$@"
 FAKE
 cat > "$tmp/bin/foot" <<'FAKE'
 #!/bin/bash
+printf 'umask-seen %s\n' "$(umask)" >> "$FAKE_LOG"
+printf 'term-pid %s\n' "$$" >> "$FAKE_LOG"
 printf 'foot-launched\n' >> "$FAKE_LOG"
+[[ -z ${FAKE_TERM_SLEEP+x} ]] || exec sleep "$FAKE_TERM_SLEEP"
 exit "${FAKE_FOOT_RC:-0}"
 FAKE
 # The launcher tries the desktop's terminal first (#18), so it is faked as
@@ -170,7 +174,8 @@ reset() {
     FAKE_AGENTS FAKE_TABS FAKE_FOCUS_SLEEP FAKE_GET_SLEEP FAKE_READ_SLEEP \
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
     FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE \
-    FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC
+    FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC \
+    FAKE_TERM_SLEEP
   local var
   for var in ${!FAKE_SNAPSHOT_BODY_@} ${!FAKE_SNAPSHOT_SLEEP_@}; do unset "$var"; done
 }
@@ -723,5 +728,56 @@ check "52 remote list run directory removed" test -z \
 check "52 remote ssh child stopped" test -n "$ssh_pid" &&
   check "52 remote ssh child gone" test ! -e "/proc/$ssh_pid" ||
   printf '  ssh pid %s still exists\n' "${ssh_pid:-none}"
+
+# The launcher gets the caller's umask, including through the uwsm wrapper.
+reset
+out=$(umask 022; "$script" open s1)
+check "53 terminal inherits umask" grep -qFx 'umask-seen 0022' "$FAKE_LOG"
+check "53 uwsm wrapper used" grep -qFx 'uwsm-launched' "$FAKE_LOG"
+check "53 immediate success" jq -e '.ok == true' <<<"$out"
+
+# A terminal still running after the launch check succeeds. Kill the fake by
+# its logged PID because show_session disowns it.
+reset
+out=$(umask 022; FAKE_TERM_SLEEP=1 "$script" open s1)
+term_pid=$(awk '$1 == "term-pid" { print $2; exit }' "$FAKE_LOG")
+check "54 live terminal succeeds" jq -e '.ok == true' <<<"$out"
+check "54 live terminal inherits umask" grep -qFx 'umask-seen 0022' "$FAKE_LOG"
+check "54 terminal still alive" test -n "$term_pid" &&
+  check "54 terminal process running" kill -0 "$term_pid"
+[[ -z $term_pid ]] || kill "$term_pid" 2>/dev/null || true
+
+reset
+out=$(FAKE_FOOT_RC=0 "$script" open s1)
+check "55 immediate zero succeeds" jq -e '.ok == true' <<<"$out"
+
+reset
+out=$(FAKE_FOOT_RC=1 "$script" open s1)
+check "56 immediate failure reported" jq -e '.error == "the terminal exited at once"' <<<"$out"
+
+# Its cache and run files still use the script's private umask.
+reset
+rm -rf -- "$cache"
+out=$(umask 022; "$script" demo on)
+check "57 demo cache mode" test "$(stat -c %a "$cache")" = 700
+check "57 demo file mode" test "$(stat -c %a "$cache/demo")" = 600
+check "57 demo enabled" jq -e '.ok == true' <<<"$out"
+"$script" demo off >/dev/null
+
+reset
+(umask 022; exec env FAKE_LIST_SLEEP=30 "$script" list >/dev/null 2>&1) &
+pid=$!
+run_dir=""
+for ((i = 0; i < 50; i++)); do
+  run_dir=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print -quit)
+  [[ -z $run_dir ]] || break
+  sleep 0.05
+done
+check "58 run directory created" test -n "$run_dir"
+[[ -z $run_dir ]] || check "58 run directory mode" test "$(stat -c %a "$run_dir")" = 700
+kill -TERM "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+check "58 run directory removed" test -z \
+  "$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print)"
 
 exit "$failed"
