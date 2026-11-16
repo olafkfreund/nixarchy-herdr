@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 22
 spec: spec/2026-11-16-22-herdr-core-app.md
 coders:
