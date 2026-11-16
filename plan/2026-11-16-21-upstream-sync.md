@@ -54,7 +54,10 @@ Closes #21 on branch `fix/21-upstream-sync`.
   - replace `iconComponent: Component { Item { … } }` with
     `hasVisualContent: true` plus the same `Item` as a direct child, with
     `anchors.fill: parent` and `scale: button.pressScale`;
-  - add a one-line comment on why it isn't an `iconComponent`;
+  - add a one-line comment on why it isn't an `iconComponent`. The why: the
+    shell hands `iconComponent` to `BarIconContent`, which scales the whole
+    content to one icon by its bounds, so the badge shrank with the glyph.
+    The comment may name `iconComponent`;
   - change nothing else in the artwork: the mark, the `MultiEffect` tint, the
     badge's anchors, ratios, colours, rim, count text and visibility.
 - **U3: history.**
@@ -98,13 +101,20 @@ Closes #21 on branch `fix/21-upstream-sync`.
      - Change the launch line in `show_session` as above.
      - Add a one-line comment saying why the umask is restored for the launch
        only.
-   - **Tests:** the fake terminal gains `FAKE_TERM_SLEEP`, and logs
-     `umask-seen $(umask)` to `FAKE_LOG`.
+   - **Tests:** both terminal fakes, `foot` and `xdg-terminal-exec`, change
+     the same way:
+     - they log `umask-seen $(umask)` and `term-pid $$` to `FAKE_LOG` first;
+     - then, with `FAKE_TERM_SLEEP` set, they `exec sleep "$FAKE_TERM_SLEEP"`;
+     - otherwise they exit with `FAKE_FOOT_RC`.
+
+     The test kills the logged PID afterwards. `show_session` disowns the
+     launcher, so the script returns before the fake ends.
      - Under `umask 022`, `open s1` logs `umask-seen 0022`, through the
        `uwsm-app` fake as well.
      - `FAKE_TERM_SLEEP=1` (alive past the 0.3 s check) gives `ok:true` and
        the inherited umask. The test kills it afterwards.
-     - `FAKE_FOOT_RC=1` still gives `the terminal exited at once`.
+     - `FAKE_FOOT_RC=1` still gives `the terminal exited at once`, and
+       `FAKE_FOOT_RC=0` still gives `ok:true` (#20's cases).
      - Under `umask 022`:
        - `demo on` creates the cache directory with mode 700, and a demo file
          with no group or other bits;
@@ -132,10 +142,15 @@ Closes #21 on branch `fix/21-upstream-sync`.
    Verify:
 
    ```bash
-   grep -n 'iconComponent\|opticalSize' Panel.qml   # nothing
+   ! grep -nE '^\s*(iconComponent|opticalSize)\s*:' Panel.qml   # no such property left; comments may name it
+   grep -n 'hasVisualContent: true' Panel.qml
+   grep -n 'scale: button.pressScale' Panel.qml
    omarchy plugin validate .
    node tests/session-actions.cjs
    ```
+
+   Limit: `validate` does not type-check QML against the shell, so a typo in
+   the new properties shows up only in step 5's live check (the shell log).
 
    Traps:
    - `button` is the `BarIconButton`'s id.
@@ -174,8 +189,15 @@ Closes #21 on branch `fix/21-upstream-sync`.
      [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse HEAD^1^{tree})" ]   # no file changed
      for c in 73b6605 b00a6ca 4513202 b4dceeb 43e61b5 d0df5ea 448fdd1 ff66115; do
        git log -1 --format=%B | grep -q "$c" || echo "missing $c"; done   # all eight named
-     git log --reverse HEAD..upstream/master --no-merges --format=%h   # c22668d 8634049 83007e3
+     git log --reverse HEAD..83007e3 --no-merges --format=%h   # c22668d 8634049 83007e3
      ```
+
+   - **The PR is merged with a merge commit** (`gh pr merge --merge`). A squash
+     or rebase would drop `b00a6ca` from master's history, and a fast-forward
+     would leave the empty `-s ours` merge as master's tip.
+   - **Fixes from review go before the history merge.** Any fix from the
+     reviews is committed before the `-s ours` merge, which is then redone so
+     it stays the last commit.
 
    Then the Tests below, push, and a PR that links the intent, spec and plan.
 
@@ -211,9 +233,11 @@ omarchy plugin validate .
 
 ## Review
 
-- **Opus:** a fresh agent on `model: "opus"` gets this plan and
-  `git diff master...fix/21-upstream-sync`.
-- **codex:** the `Panel.qml` diff.
+- **Opus:** a fresh agent on `model: "opus"` gets this plan,
+  `git diff master...fix/21-upstream-sync`, and
+  `git show --stat HEAD` / `git log -3 --format=%H%n%P%n%B` for the U3 merge.
+- **codex:** this plan and the `Panel.qml` diff; it may open `Panel.qml` in
+  full (for `id: button`).
 - **agy:** this plan plus the diff of `bin/` and `tests/` only, kept narrow so
   it fits inside its print timeout.
 - **Context:** codex and agy may also open the changed files in full in the
@@ -224,4 +248,6 @@ omarchy plugin validate .
 - **Before merge:** delete the branch.
 - **After merge:** `git revert -m 1 <merge commit>`. The `-s ours` merge
   changes no file, so reverting the PR's merge removes U1, U2 and U4.
+  `b00a6ca` stays in master's history; that only records upstream as
+  handled.
 - **No state migration.**
