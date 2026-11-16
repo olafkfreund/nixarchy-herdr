@@ -207,14 +207,16 @@ PanelKeyCatcher {
       id: staleBox
       width: parent.width
       height: staleBox.visible ? staleWarning.implicitHeight + Style.space(6) : 0
-      visible: !panel.reachable || panel.actionError !== ""
+      visible: !panel.reachable || panel.actionError !== "" || panel.hiddenSessions > 0
 
       Text {
         id: staleWarning
         anchors.verticalCenter: parent.verticalCenter
         width: parent.width
         text: panel.actionError !== "" ? panel.actionError
-          : (panel.errorText !== "" ? panel.errorText : "Could not reach herdr.")
+          : (panel.errorText !== "" ? panel.errorText
+             : (!panel.reachable ? "Could not reach herdr."
+                : panel.hiddenSessions + " sessions not shown"))
         textFormat: Text.PlainText
         elide: Text.ElideRight
         font.family: panel.fontFamily
@@ -258,7 +260,8 @@ PanelKeyCatcher {
         width: list.width - (list.interactive ? Style.space(10) : 0)
         height: rowContent.implicitHeight + Style.space(10)
         radius: Style.cornerRadius
-        opacity: panel.pendingKey === panel.sessionKey(modelData) ? 0.4 : 1
+        opacity: (panel.pendingKey === panel.sessionKey(modelData)
+                  || panel.killPendingKey === panel.sessionKey(modelData)) ? 0.4 : 1
         color: active
           ? Qt.rgba(panel.foreground.r, panel.foreground.g, panel.foreground.b, 0.08)
           : "transparent"

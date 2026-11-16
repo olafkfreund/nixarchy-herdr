@@ -26,6 +26,10 @@ Item {
   readonly property color urgent: host ? host.urgent : Commons.Color.urgent
   readonly property string fontFamily: host ? host.fontFamily : Style.font.family
 
+  // Emitted once when an action started by run() or newSession() finishes.
+  // Never for a kill, a list or a host poll.
+  signal actionFinished(string action, bool ok)
+
   function close() { if (host) host.close() }
   function togglePin() { if (host && typeof host.togglePin === "function") host.togglePin() }
 
@@ -80,7 +84,8 @@ Item {
   property var hostNames: []
   property var hostSessions: ({})
   // Per host: "ok" when it answered with servers running, "empty" when it
-  // answered with none, "down" when it did not answer.
+  // answered with none, "down" when it did not answer, and "checking" until
+  // the first answer after the menu opened.
   property var hostState: ({})
   property int runningCount: 0
   property int agentCount: 0
@@ -98,6 +103,18 @@ Item {
   // list not arriving; this is about the one thing you just pressed, which
   // otherwise failed by leaving the row exactly where it was.
   property string actionError: ""
+  // The action actionProc is running, and whether finishing it should close
+  // the surface. Only one runs at a time, so these need no key.
+  property string actionName: ""
+  property bool actionDismiss: false
+  // Kill has its own process, so a slow kill never blocks opening a window.
+  property string killPendingKey: ""
+  // Sessions the script left out of the list for size, and running servers
+  // whose agents it could not read.
+  property int hiddenSessions: 0
+  property int unreadableCount: 0
+  // Bumped when the menu closes; a host poll started before that is stale.
+  property int pollGen: 0
   // Session the script is currently acting on, as sessionKey(), so its row
   // can dim.
   property string pendingKey: ""
@@ -163,8 +180,9 @@ Item {
   }
 
   function refresh() {
-    if (!listProc.running) {
+    if (!listProc.running && !listProc.open) {
       listProc.command = [root.script, "list"]
+      listProc.open = true
       listProc.running = true
     }
     // Other machines are asked only while the menu is open. The settle timer
@@ -180,6 +198,62 @@ Item {
     }
   }
 
+  // Both signals of a process (its stdout and its exit) come in either order.
+  // Store each, and complete the run when the second one arrives.
+  function storeResult(proc, which, value) {
+    if (which === "out") { proc.out = value; proc.gotOut = true }
+    else { proc.code = value; proc.gotExit = true }
+    if (!proc.gotOut || !proc.gotExit) return
+    finishRun(proc, proc.out, proc.code)
+  }
+
+  // Quickshell reports a command that could not start only by `running`
+  // going false, with neither stdout nor an exit: complete that run once, as
+  // a failure, or whatever waits on it waits for good.
+  function startFailed(proc) {
+    if (!proc.open) return
+    finishRun(proc, JSON.stringify({ ok: false, error: "could not start herdr-sessions" }), -1)
+  }
+
+  function finishRun(proc, out, code) {
+    proc.open = false
+    proc.gotOut = false
+    proc.gotExit = false
+    complete(proc.kind, out, code, proc)
+    // A poll asked for again while it was still exiting starts over now.
+    if (proc.restartPending === true) {
+      proc.restartPending = false
+      if (opened) proc.start()
+    }
+  }
+
+  // One completion per run. Only an action may dismiss the surface.
+  function complete(kind, out, code, proc) {
+    if (kind === "list") { applyPayload(out, code); return }
+    if (kind === "host") {
+      if (proc.gen !== pollGen) return
+      applyHostPayload(proc.modelData, code === 0 ? out : "")
+      return
+    }
+    var data = null
+    try { data = JSON.parse(out) } catch (e) { data = null }
+    var ok = data !== null && data.ok === true && code === 0
+    var action = kind === "kill" ? "kill" : actionName
+    if (kind === "kill") killPendingKey = ""
+    else pendingKey = ""
+    if (ok) actionError = ""
+    else if (data && data.error) actionError = String(data.error)
+    else if (code !== 0) actionError = "herdr-sessions exited with code " + code
+    else actionError = data ? action + " failed" : "unexpected output from herdr-sessions"
+    if (kind === "action") {
+      if (ok && actionDismiss) dismiss()
+      actionFinished(action, ok)
+    }
+    // A stopped server disappears from the list, and a freshly opened window
+    // takes a moment to register its agents. One beat, then look again.
+    settleTimer.restart()
+  }
+
   // Everything drawn, local first and then each host in the order the config
   // names them, with the counts taken over the lot so the title and the badge
   // describe what is on screen.
@@ -191,10 +265,20 @@ Item {
         for (var j = 0; j < list.length; j++) all.push(list[j])
       }
 
-    var running = 0, agents = 0, blocked = 0, done = 0, working = 0
+    // The cursor follows what it is on, not the number of the row: a refresh
+    // that re-sorts the list must not move it onto a different session.
+    var oldKey = cursor >= 0 ? rowKey(sessions, rowAt(cursor)) : ""
+    var rows = navRowsFor(all)
+    var found = -1
+    if (oldKey !== "")
+      for (var r = 0; r < rows.length; r++)
+        if (rowKey(all, rows[r]) === oldKey) { found = r; break }
+
+    var running = 0, agents = 0, blocked = 0, done = 0, working = 0, unreadable = 0
     for (var k = 0; k < all.length; k++) {
       var session = all[k]
       if (session.running) running++
+      if (session.running && session.readable === false) unreadable++
       agents += session.agents || 0
       blocked += session.blocked || 0
       done += session.done || 0
@@ -207,6 +291,9 @@ Item {
     blockedCount = blocked
     doneCount = done
     workingCount = working
+    unreadableCount = unreadable
+    if (found >= 0) cursor = found
+    else if (cursor > rows.length - 1) cursor = rows.length - 1
 
     updateAttention(all)
     if (opened && !cursorPlaced) {
@@ -215,14 +302,14 @@ Item {
       var row = rowAt(cursor)
       if (row) showRow(row.sessionIndex)
     }
-    if (cursor > navRows.length - 1) cursor = navRows.length - 1
+    clampColumn()
   }
 
   // What a host's dot says: it answered and something is running, it answered
   // with nothing running, or it did not answer at all.
   function stateOfHost(host) {
     if (!host) return "ok"
-    return hostState[host] || "down"
+    return hostState[host] || "checking"
   }
 
   function applyHostPayload(host, text) {
@@ -248,15 +335,32 @@ Item {
     rebuild()
   }
 
-  function run(action, session, extra) {
-    if (!session || !validName(session.name) || actionProc.running) return
-    pendingKey = sessionKey(session)
+  // Starts the script for one action. Returns false, with the reason in
+  // actionError, when it cannot start. Kill has its own process.
+  function launch(action, host, name, extra, dismissOnSuccess) {
+    var proc = action === "kill" ? killProc : actionProc
+    if (proc.running || proc.open) {
+      actionError = "busy: " + (action === "kill" ? "kill" : actionName) + " is still running"
+      return false
+    }
+    var key = sessionKey({ host: host, name: name })
+    if (action === "kill") killPendingKey = key
+    else { pendingKey = key; actionName = action; actionDismiss = dismissOnSuccess === true }
     var command = [root.script]
-    if (session.host) command.push("--host", session.host)
-    command.push(action, session.name)
+    if (host) command.push("--host", host)
+    command.push(action, name)
     if (extra !== undefined && extra !== "") command.push(extra)
-    actionProc.command = command
-    actionProc.running = true
+    proc.gotOut = false
+    proc.gotExit = false
+    proc.open = true
+    proc.command = command
+    proc.running = true
+    return true
+  }
+
+  function run(action, session, extra, dismissOnSuccess) {
+    if (!session || !validName(session.name)) return false
+    return launch(action, session.host, session.name, extra, dismissOnSuccess)
   }
 
   // A dropdown is in the way of the window you just asked for, so acting from
@@ -270,8 +374,7 @@ Item {
   // Focus the window this session is already showing, or open one.
   function openSession(session) {
     if (!session || !validName(session.name)) return
-    run("open", session)
-    dismiss()
+    run("open", session, undefined, true)
   }
 
   // One step further in than openSession: the agent's own pane is focused
@@ -288,8 +391,7 @@ Item {
     if (!session || !agent) return
     if (!validPane(agent.pane)) { openSession(session); return }
     if (!validName(session.name)) return
-    run("focus", session, agent.pane)
-    dismiss()
+    run("focus", session, agent.pane, true)
   }
 
   // Deleting throws away a session that is already stopped - its directory and
@@ -298,7 +400,7 @@ Item {
   // to the same row. The shared session is herdr's own and is not deleted from
   // here at all.
   function removeSession(session) {
-    if (!session || session.isDefault || session.running) return
+    if (!session || session.isDefault || session.running || hostUnchecked(session)) return
     run("delete", session)
   }
 
@@ -310,7 +412,7 @@ Item {
   //
   // The shared session is killed like any other. It wedges like any other.
   function killSession(session) {
-    if (!session || !session.running || !validName(session.name)) return
+    if (!session || !session.running || !validName(session.name) || hostUnchecked(session)) return
     run("kill", session)
   }
 
@@ -324,13 +426,23 @@ Item {
   // ConfirmDialog's own default: a dialog that destroys something on a
   // reflexive Enter is worse than no dialog, because it trains the reflex.
   function askKill(session) {
-    if (!session || !session.running || !validName(session.name)) return
+    if (!session || !session.running || !validName(session.name) || hostUnchecked(session)) return
     ask(session, "kill")
   }
 
   function askDelete(session) {
-    if (!session || session.isDefault || session.running) return
+    if (!session || session.isDefault || session.running || hostUnchecked(session)) return
     ask(session, "delete")
+  }
+
+  // A host that has not answered since the menu opened shows rows from before,
+  // or none: acting on them would be acting on a guess.
+  function hostUnchecked(session) {
+    if (!session.host) return false
+    var state = stateOfHost(session.host)
+    if (state !== "checking" && state !== "down") return false
+    actionError = session.host + " not checked yet"
+    return true
   }
 
   function ask(session, action) {
@@ -348,11 +460,23 @@ Item {
   }
 
   function confirmPending() {
-    var session = confirmTarget
+    var target = confirmTarget
     var action = confirmAction
     closeConfirm()
-    if (action === "kill") killSession(session)
-    else if (action === "delete") removeSession(session)
+    if (!target) return
+    // The list may have changed while the dialog was open: act on what is
+    // there now, and only if it is still what was asked about.
+    var current = null
+    var key = sessionKey(target)
+    for (var i = 0; i < sessions.length; i++)
+      if (sessionKey(sessions[i]) === key) current = sessions[i]
+    if (!current || (action === "kill" && !current.running)
+        || (action === "delete" && current.running)) {
+      actionError = sessionLabel(target) + " changed; nothing done"
+      return
+    }
+    if (action === "kill") killSession(current)
+    else if (action === "delete") removeSession(current)
   }
 
   function confirmMessage() {
@@ -371,10 +495,12 @@ Item {
   // A session with no agents still gets a row of its own, or a stopped session
   // and an empty server would drop out of the keyboard entirely and there
   // would be no way to open or delete one without the mouse.
-  readonly property var navRows: {
+  readonly property var navRows: navRowsFor(sessions)
+
+  function navRowsFor(all) {
     var rows = []
-    for (var i = 0; i < sessions.length; i++) {
-      var agents = sessions[i].agentList || []
+    for (var i = 0; i < all.length; i++) {
+      var agents = all[i].agentList || []
       if (agents.length === 0) {
         rows.push({ sessionIndex: i, agentIndex: -1 })
         continue
@@ -383,6 +509,16 @@ Item {
         rows.push({ sessionIndex: i, agentIndex: j })
     }
     return rows
+  }
+
+  // What a row is, independent of where it sits: an agent by its pane, a
+  // session with no agents by its name.
+  function rowKey(list, row) {
+    var session = row ? list[row.sessionIndex] : null
+    if (!session) return ""
+    if (row.agentIndex < 0) return sessionKey(session) + "\u0000"
+    var agent = (session.agentList || [])[row.agentIndex]
+    return agent ? agentKey(session, agent.pane) : ""
   }
 
   function rowAt(index) {
@@ -443,6 +579,7 @@ Item {
 
   function moveColumn(delta) {
     if (navRows.length === 0) return
+    cursorPlaced = true
     if (cursor < 0) cursor = bestRow()
     column += delta
     clampColumn()
@@ -452,6 +589,7 @@ Item {
   // to know how many buttons it has.
   function cycleColumn(direction) {
     if (navRows.length === 0) return
+    cursorPlaced = true
     if (cursor < 0) { cursor = bestRow(); column = root.columnRow; return }
     var last = lastColumnFor(sessionAt(cursor))
     column += direction
@@ -461,6 +599,7 @@ Item {
 
   function moveCursor(delta) {
     if (navRows.length === 0) return
+    cursorPlaced = true
     var next = cursor < 0 ? (delta > 0 ? 0 : navRows.length - 1) : cursor + delta
     if (next < 0) next = 0
     if (next > navRows.length - 1) next = navRows.length - 1
@@ -507,6 +646,7 @@ Item {
   // The mouse moves the same cursor the keys do, so leaving the mouse and
   // reaching for the arrows carries on from where you were pointing.
   function cursorToAgent(sessionIndex, agentIndex) {
+    cursorPlaced = true
     column = root.columnRow
     for (var i = 0; i < navRows.length; i++)
       if (navRows[i].sessionIndex === sessionIndex && navRows[i].agentIndex === agentIndex) {
@@ -516,6 +656,7 @@ Item {
   }
 
   function cursorToSession(sessionIndex) {
+    cursorPlaced = true
     column = root.columnRow
     for (var i = 0; i < navRows.length; i++)
       if (navRows[i].sessionIndex === sessionIndex) {
@@ -552,7 +693,8 @@ Item {
     for (var i = 0; i < hostNames.length; i++) {
       var state = stateOfHost(hostNames[i])
       parts.push(hostNames[i] + " "
-                 + (state === "ok" ? "\u25cf" : state === "empty" ? "\u25cb" : "\u2013"))
+                 + (state === "ok" ? "\u25cf" : state === "empty" ? "\u25cb"
+                    : state === "checking" ? "\u2026" : "\u2013"))
     }
     return parts.join("   ")
   }
@@ -581,14 +723,11 @@ Item {
   }
 
   function newSession(host, name, dir) {
-    if (!validName(name) || actionProc.running) return
-    pendingKey = sessionKey({ host: host, name: name })
-    var command = [root.script]
-    if (host) command.push("--host", host)
-    command.push("new", name)
-    if (dir !== undefined && dir !== "") command.push(dir)
-    actionProc.command = command
-    actionProc.running = true
+    if (!validName(name)) {
+      actionError = "not a valid session name"
+      return false
+    }
+    return launch("new", host, name, dir, false)
   }
 
   // A stopped session names what it is holding rather than only saying it is
@@ -614,9 +753,12 @@ Item {
   function countLabel(session) {
     if (!session) return ""
     if (!session.running) return "stopped"
+    if (session.readable === false) return "unreadable"
     var n = session.agents || 0
     if (n === 0) return "no agents"
-    return n === 1 ? "1 agent" : n + " agents"
+    var label = n === 1 ? "1 agent" : n + " agents"
+    var hidden = session.hiddenAgents || 0
+    return hidden > 0 ? label + " (" + hidden + " not shown)" : label
   }
 
   // The one word worth colouring: blocked means an agent is waiting on you,
@@ -638,7 +780,8 @@ Item {
   // them says the same thing without moving.
   function cleanTitle(title) {
     var s = String(title || "").trim()
-    var stripped = s.replace(/^[^0-9A-Za-z\u00C0-\u024F]+/, "").trim()
+    // Only what herdr's spinners are made of, so a CJK or emoji title stays.
+    var stripped = s.replace(/^[\u2800-\u28FF\u2500-\u257F\u2733\u273B\u25CF\u25D0\u25D3\u25D1\u25D2\u2022 ]+/, "").trim()
     return stripped !== "" ? stripped : s
   }
 
@@ -727,10 +870,12 @@ Item {
   // tooltip is where that gets spelled out, and where a herd that wants
   // something says so before the panel is even open.
   function tooltipText() {
+    if (!reachable) return "Herdr: " + (errorText || "could not reach herdr")
     var parts = [runningCount + (runningCount === 1 ? " herdr server" : " herdr servers"),
                  agentCount + (agentCount === 1 ? " agent" : " agents")]
     if (blockedCount > 0) parts.push(blockedCount + " waiting on you")
     if (doneCount > 0) parts.push(doneCount + " finished")
+    if (unreadableCount > 0) parts.push(unreadableCount + " unreadable")
     return parts.join(", ")
   }
 
@@ -752,6 +897,7 @@ Item {
   function updateAttention(sessionList) {
     var wantingNow = {}
     var freshest = null
+    var tied = false
     for (var i = 0; i < sessionList.length; i++) {
       var session = sessionList[i]
       var agents = session.agentList || []
@@ -760,8 +906,13 @@ Item {
         var key = root.agentKey(session, agents[j].pane)
         wantingNow[key] = true
         if (root.wantingBefore[key]) continue
-        if (freshest === null || (agents[j].seq || 0) > freshest.seq)
-          freshest = { key: key, seq: agents[j].seq || 0 }
+        var seq = agents[j].seq || 0
+        if (freshest === null || seq > freshest.seq) {
+          freshest = { key: key, seq: seq }
+          tied = false
+        } else if (seq === freshest.seq) {
+          tied = true
+        }
       }
     }
 
@@ -769,7 +920,8 @@ Item {
     // place: the blink is about a question still standing, not about history.
     if (root.attentionKey !== "" && !wantingNow[root.attentionKey])
       root.attentionKey = ""
-    if (freshest !== null && root.attentionPrimed) root.attentionKey = freshest.key
+    if (freshest !== null && root.attentionPrimed)
+      root.attentionKey = tied ? "" : freshest.key
 
     root.wantingBefore = wantingNow
     root.attentionPrimed = true
@@ -780,13 +932,14 @@ Item {
     return root.agentKey(session, agent.pane) === root.attentionKey
   }
 
-  function applyPayload(text) {
+  function applyPayload(text, code) {
     try {
       var data = JSON.parse(text)
-      reachable = data.ok === true
-      errorText = data.error || ""
+      reachable = data.ok === true && !(code > 0)
+      errorText = data.error || (code > 0 ? "herdr-sessions exited with code " + code : "")
       if (!reachable) return
       localSessions = data.sessions || []
+      hiddenSessions = data.hidden || 0
       rebuild()
     } catch (e) {
       reachable = false
@@ -794,9 +947,35 @@ Item {
     }
   }
 
+  // The poll rate: faster while the panel is open, and while anything can
+  // change by itself. A done-only herd is waiting for you, not for herdr.
+  function pollInterval() {
+    if (opened) return 3000
+    return blockedCount > 0 || workingCount > 0 ? 5000 : 20000
+  }
+
+  // A host list that changed drops what was kept for the hosts that left.
+  function applyHosts(list) {
+    var next = {}, state = {}
+    for (var i = 0; i < list.length; i++) {
+      if (hostSessions[list[i]] !== undefined) next[list[i]] = hostSessions[list[i]]
+      if (hostState[list[i]] !== undefined) state[list[i]] = hostState[list[i]]
+    }
+    hostNames = list
+    hostSessions = next
+    hostState = state
+    rebuild()
+  }
+
   onOpenedChanged: {
     if (opened) {
       actionError = ""
+      hostState = ({})
+      // A poll still exiting from the last opening starts over when it does.
+      for (var p = 0; p < hostPolls.count; p++) {
+        var old = hostPolls.objectAt(p)
+        if (old && old.running) old.restartPending = true
+      }
       refresh()
       // The list may still be the one from the last poll, so place the cursor
       // on what we know now and again when the fresh answer lands.
@@ -804,7 +983,10 @@ Item {
       column = root.columnRow
       cursorPlaced = false
     } else {
-      // Closing stops every ssh call, including the ones still out.
+      // Closing stops every ssh call, including the ones still out, and
+      // whatever they were going to say is out of date.
+      pollGen++
+      closeConfirm()
       for (var i = 0; i < hostPolls.count; i++) {
         var poll = hostPolls.objectAt(i)
         if (poll) poll.running = false
@@ -822,8 +1004,8 @@ Item {
     path: Quickshell.env("HOME") + "/.config/omarchy/herdr.json"
     watchChanges: true
     printErrors: false
-    onLoaded: root.hostNames = root.parseHosts(text())
-    onLoadFailed: root.hostNames = []
+    onLoaded: root.applyHosts(root.parseHosts(text()))
+    onLoadFailed: root.applyHosts([])
     onFileChanged: reload()
   }
 
@@ -850,45 +1032,73 @@ Item {
     delegate: Process {
       id: hostProc
       required property string modelData
+      property string kind: "host"
+      property int gen: 0
+      property bool restartPending: false
+      property string out: ""
+      property int code: 0
+      property bool gotOut: false
+      property bool gotExit: false
+      property bool open: false
       function start() {
+        gen = root.pollGen
+        gotOut = false
+        gotExit = false
+        open = true
         command = [root.script, "--host", modelData, "list"]
         running = true
       }
       stdout: StdioCollector {
-        onStreamFinished: root.applyHostPayload(hostProc.modelData, text)
+        onStreamFinished: root.storeResult(hostProc, "out", text)
       }
-      onExited: function (code) {
-        if (code !== 0) root.applyHostPayload(hostProc.modelData, "")
-      }
+      onExited: function (exitCode) { root.storeResult(hostProc, "exit", exitCode) }
+      onRunningChanged: if (!running) root.startFailed(hostProc)
     }
   }
 
   Process {
     id: listProc
+    property string kind: "list"
+    property string out: ""
+    property int code: 0
+    property bool gotOut: false
+    property bool gotExit: false
+    property bool open: false
     stdout: StdioCollector {
-      onStreamFinished: root.applyPayload(text)
+      onStreamFinished: root.storeResult(listProc, "out", text)
     }
+    onExited: function (exitCode) { root.storeResult(listProc, "exit", exitCode) }
+    onRunningChanged: if (!running) root.startFailed(listProc)
   }
 
   Process {
     id: actionProc
+    property string kind: "action"
+    property string out: ""
+    property int code: 0
+    property bool gotOut: false
+    property bool gotExit: false
+    property bool open: false
     stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var data = JSON.parse(text)
-          root.actionError = data.ok === true ? "" : (data.error || "")
-        } catch (e) {
-          root.actionError = ""
-        }
-      }
+      onStreamFinished: root.storeResult(actionProc, "out", text)
     }
-    onExited: function(exitCode) {
-      root.pendingKey = ""
-      // A stopped server disappears from the list, and a freshly opened
-      // window takes a moment to register its agents. One beat, then look
-      // again.
-      settleTimer.restart()
+    onExited: function (exitCode) { root.storeResult(actionProc, "exit", exitCode) }
+    onRunningChanged: if (!running) root.startFailed(actionProc)
+  }
+
+  Process {
+    id: killProc
+    property string kind: "kill"
+    property string out: ""
+    property int code: 0
+    property bool gotOut: false
+    property bool gotExit: false
+    property bool open: false
+    stdout: StdioCollector {
+      onStreamFinished: root.storeResult(killProc, "out", text)
     }
+    onExited: function (exitCode) { root.storeResult(killProc, "exit", exitCode) }
+    onRunningChanged: if (!running) root.startFailed(killProc)
   }
 
   Timer {
@@ -904,7 +1114,7 @@ Item {
   // that is the only time the badge colour can go stale on its own. Idle costs
   // one poll every twenty seconds and catches the moment you start something.
   Timer {
-    interval: root.opened ? 3000 : (root.badgeActive ? 5000 : 20000)
+    interval: root.pollInterval()
     // The bar keeps its badge current all the time. A surface that reaches
     // other machines polls only while it is open, so closing the menu stops
     // every ssh call; opening it refreshes straight away.

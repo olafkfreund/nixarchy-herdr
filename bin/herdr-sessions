@@ -71,6 +71,32 @@ SESSION_FILE_CAP=$((1 * 1024 * 1024))
 TOTAL_BYTE_CAP=$((8 * 1024 * 1024))
 SESSION_COUNT_CAP=200
 AGENT_COUNT_CAP=500
+LIST_BUDGET=6
+SNAPSHOT_JOBS=4
+PROC=${HERDR_TEST_PROC:-/proc}
+
+RUN_DIR="" ; JOB_PIDS=()
+run_dir_init() {               # idempotent; called by cmd_list and cmd_list_remote
+  [[ -n $RUN_DIR ]] && return 0
+  local base=${XDG_RUNTIME_DIR:-/tmp}
+  RUN_DIR=$(umask 077; mktemp -d "$base/nixarchy-herdr.XXXXXX") || return 1
+  trap run_dir_cleanup EXIT
+  trap 'exit 143' TERM INT HUP   # exit runs the EXIT trap once
+}
+# timeout puts itself in its own process group, so a job's children are found
+# through the process tree rather than signalled as a group.
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  kill -TERM "$1" 2>/dev/null || true
+}
+run_dir_cleanup() {
+  local p
+  # ${a[@]+...}: bash 4.3 treats an empty array as unset under set -u.
+  for p in ${JOB_PIDS[@]+"${JOB_PIDS[@]}"}; do kill_tree "$p"; done
+  for p in ${JOB_PIDS[@]+"${JOB_PIDS[@]}"}; do wait "$p" 2>/dev/null || true; done
+  [[ -n $RUN_DIR ]] && rm -rf -- "$RUN_DIR"
+}
 
 # Whether a read came back at its ceiling, which means there was more to come.
 # Callers pipe through `head -c cap+1`, so that one extra byte is the evidence.
@@ -80,6 +106,7 @@ AGENT_COUNT_CAP=500
 # and makes the whole pipeline non-zero on a perfectly good read, and under
 # `set -e` that would take the script down with it.
 over_byte_cap() {
+  local LC_ALL=C
   [ "$(printf '%s' "$1" | wc -c)" -gt "$2" ]
 }
 
@@ -145,10 +172,17 @@ ssh_options() {
   fi
 }
 
+bounded() {
+  local s=$1; shift
+  timeout -k 1 "$s" "$@"
+}
+
+timed_out() { [[ $1 == 124 || $1 == 137 ]]; }
+
 ssh_run() {
   local -a SSH_OPTS
   ssh_options
-  timeout "${2:-8}" ssh "${SSH_OPTS[@]}" -- "$HOST" "$1"
+  bounded "${2:-8}" ssh "${SSH_OPTS[@]}" -- "$HOST" "$1"
 }
 
 # A herdr started from inside a herdr pane refuses to run ("nested herdr is
@@ -186,10 +220,10 @@ cmd_demo() {
 demo_list() {
   cat <<'DEMO'
 {"ok":true,"error":"","sessions":[
-{"name":"default","isDefault":true,"running":true,"version":"0.8.2","agents":2,"working":1,"blocked":0,"idle":1,"done":0,"workspaces":2,"projects":["checkout-service","design-tokens"],"agentList":[{"title":"Rewrite the receipt formatter","status":"working","pane":"w1:p1","tab":"Receipts","seq":11},{"title":"Token names for the new palette","status":"idle","pane":"w2:p1","tab":"Palette","seq":9}],"windowAddress":"0x1"},
-{"name":"3","isDefault":false,"running":true,"version":"0.8.2","agents":1,"working":0,"blocked":1,"idle":0,"done":0,"workspaces":1,"projects":["billing-api"],"agentList":[{"title":"Drop the legacy invoice table","status":"blocked","pane":"w1:p1","tab":"Migration","seq":14}],"windowAddress":"0x2"},
-{"name":"5","isDefault":false,"running":true,"version":"0.8.2","agents":2,"working":0,"blocked":0,"idle":0,"done":2,"workspaces":1,"projects":["docs-site"],"agentList":[{"title":"Upgrade the search index","status":"done","pane":"w1:p1","tab":"Search","seq":12},{"title":"Fix the broken anchor links","status":"done","pane":"w1:p2","tab":"Anchors","seq":13}],"windowAddress":""},
-{"name":"9","isDefault":false,"running":false,"version":"","agents":0,"working":0,"blocked":0,"idle":0,"done":0,"workspaces":0,"projects":[],"agentList":[],"windowAddress":""}
+{"name":"default","isDefault":true,"running":true,"readable":true,"version":"0.8.2","agents":2,"working":1,"blocked":0,"idle":1,"done":0,"workspaces":2,"projects":["checkout-service","design-tokens"],"agentList":[{"title":"Rewrite the receipt formatter","status":"working","pane":"w1:p1","tab":"Receipts","seq":11},{"title":"Token names for the new palette","status":"idle","pane":"w2:p1","tab":"Palette","seq":9}],"windowAddress":"0x1"},
+{"name":"3","isDefault":false,"running":true,"readable":true,"version":"0.8.2","agents":1,"working":0,"blocked":1,"idle":0,"done":0,"workspaces":1,"projects":["billing-api"],"agentList":[{"title":"Drop the legacy invoice table","status":"blocked","pane":"w1:p1","tab":"Migration","seq":14}],"windowAddress":"0x2"},
+{"name":"5","isDefault":false,"running":true,"readable":true,"version":"0.8.2","agents":2,"working":0,"blocked":0,"idle":0,"done":2,"workspaces":1,"projects":["docs-site"],"agentList":[{"title":"Upgrade the search index","status":"done","pane":"w1:p1","tab":"Search","seq":12},{"title":"Fix the broken anchor links","status":"done","pane":"w1:p2","tab":"Anchors","seq":13}],"windowAddress":""},
+{"name":"9","isDefault":false,"running":false,"readable":false,"version":"","agents":0,"working":0,"blocked":0,"idle":0,"done":0,"workspaces":0,"projects":[],"agentList":[],"windowAddress":""}
 ],"running":3,"agents":5,"blocked":1,"done":2,"working":1}
 DEMO
 }
@@ -211,8 +245,8 @@ require_tools() {
 # the closing bracket before splitting: what follows is state, then ppid.
 parent_pid() {
   local line rest
-  { read -r line < "/proc/$1/stat"; } 2>/dev/null || return 1
-  rest=${line#*") "}
+  { read -r line < "$PROC/$1/stat"; } 2>/dev/null || return 1
+  rest=${line##*") "}
   # shellcheck disable=SC2086
   set -- $rest
   [[ ${2-} =~ ^[0-9]+$ ]] || return 1
@@ -234,7 +268,8 @@ window_map() {
   command -v hyprctl >/dev/null 2>&1 || return 0
 
   local clients
-  clients=$(hyprctl clients -j 2>/dev/null | head -c "$((WINDOWS_BYTE_CAP + 1))") || true
+  clients=$(bounded 2 hyprctl clients -j 2>/dev/null |
+    head -c "$((WINDOWS_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || return 0
   [[ -n $clients ]] || return 0
   # Window titles are set by whatever is running in them. Without a ceiling a
   # single window could decide how much this costs.
@@ -262,10 +297,12 @@ window_map() {
   # pgrep rather than ps: it reads the whole of /proc/<pid>/cmdline, where ps
   # cuts the line at COLUMNS and can drop the --session off the end.
   declare -A args_of=()
+  local processes
+  processes=$(bounded 2 pgrep -af herdr 2>/dev/null) || return 0
   while read -r pid args; do
     [[ $pid =~ ^[0-9]+$ ]] || continue
     args_of[$pid]=$args
-  done < <(pgrep -af herdr 2>/dev/null)
+  done <<< "$processes"
 
   declare -A emitted=()
 
@@ -293,14 +330,20 @@ window_map() {
       # The command itself, by name or from a bin directory; a file that only
       # happens to be called herdr, like `vim ~/src/herdr`, is not.
       [[ ${words[i]} == herdr || ${words[i]} == */bin/herdr ]] || continue
-      # `herdr server` is the background process, not a window's client.
-      [[ ${words[i + 1]-} == server ]] && return 1
       name=default
       host=""
       for ((j = i + 1; j < ${#words[@]}; j++)); do
         case ${words[j]} in
-          --session) name=${words[j + 1]-} ;;
-          --remote) host=${words[j + 1]-}; host=${host##*@} ;;
+          --session) name=${words[j + 1]-}; ((j += 1)) ;;
+          --session=*) name=${words[j]#*=} ;;
+          --remote) host=${words[j + 1]-}; host=${host##*@}; ((j += 1)) ;;
+          --remote=*) host=${words[j]#*=}; host=${host##*@} ;;
+          -*) ;;
+          session)
+            [[ ${words[j + 1]-} == attach ]] || return 1
+            name=${words[j + 2]-}
+            break ;;
+          *) return 1 ;;
         esac
       done
       valid_session_name "$name" || return 1
@@ -339,30 +382,29 @@ window_map() {
 # left off for the default one: passing it by name would address a *named*
 # session that happens to be called "default", which is a different server.
 snapshot_for() {
-  local name="$1" is_default="$2"
-  local out
-  # `|| true` because the cap in front of this can close the pipe on the
-  # server, and a SIGPIPE there is a bounded read rather than a failure. The
-  # timeout is for a server that takes the connection and never answers: its
-  # row falls back like any other that did not reply, instead of stalling
-  # every refresh behind it.
+  local name="$1" is_default="$2" limit="$3"
+  local out rc=0
+  # A failed or timed-out read has no snapshot. The extra byte reveals an
+  # oversized answer even when head closes the pipe on the server.
   if [[ $is_default == true ]]; then
-    out=$(timeout 2 herdr api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(bounded "$limit" herdr api snapshot 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   else
-    out=$(timeout 2 herdr --session "$name" api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(bounded "$limit" herdr --session "$name" api snapshot 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   fi
+  (( rc == 0 )) || return 1
   [[ -n $out ]] || return 1
-  # One oversized server is skipped rather than allowed to take the list down:
-  # the row falls back to what session.json remembers, the same as a session
-  # whose server never answered.
+  # One oversized server is unreadable rather than allowed to take the list down.
   over_byte_cap "$out" "$SNAPSHOT_BYTE_CAP" && return 1
   printf '%s' "$out"
 }
 
 cmd_list() {
-  local sessions_json
+  local LC_ALL=C sessions_json start=$SECONDS
+  run_dir_init || die "could not make a temporary directory"
   # Bounded in time as well as size: an empty answer is "could not reach".
-  sessions_json=$(timeout 4 herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
+  sessions_json=$(bounded 4 herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
   [[ -n $sessions_json ]] || die "could not reach herdr"
   over_byte_cap "$sessions_json" "$SESSIONS_BYTE_CAP" && die "session list too large to read safely"
 
@@ -371,43 +413,62 @@ cmd_list() {
   local windows=""
   [[ ${1-} == --no-windows ]] || windows=$(window_map || true)
 
-  # The snapshots are collected here rather than in jq, because each one is a
-  # separate command. They go in as a name-keyed object, so the merge below is
-  # a lookup instead of a search.
-  #
-  # The object is assembled as text rather than folded together with a jq call
-  # per session: this runs every few seconds, and a jq start costs more than
-  # everything else in this function put together. The key is safe to splice
-  # in unquoted because valid_session_name has already refused anything but
-  # letters, digits, dot, dash and underscore.
+  # Snapshots are projected in bounded jobs, then merged by session name.
   # A session that is not running has no server to ask, but it has not
   # forgotten anything either: herdr writes the layout to session.json, and
   # that file still names the workspaces and the directory each one was opened
   # in. Reading it is what makes a stopped row say what it is holding rather
   # than only that it is down - the difference between a session worth starting
   # back up and a name left over from an afternoon.
-  local snapshots='' saved='' ghosts='' name is_default running dir snap labels
-  # Two ceilings on the loop itself. The per-source caps above bound any one
-  # answer; these bound the sum of them, which is the case a hundred sessions
-  # each just under their own limit would otherwise walk straight through.
-  local seen=0 dropped=0
+  local saved='' ghosts='' name is_default running dir labels remaining limit active=0
   while IFS=$'\t' read -r name is_default running dir; do
     [[ -n $name ]] || continue
     valid_session_name "$name" || continue
 
-    if (( seen >= SESSION_COUNT_CAP )); then
-      dropped=$(( dropped + 1 ))
-      continue
-    fi
-    if (( ${#snapshots} + ${#saved} > TOTAL_BYTE_CAP )); then
-      dropped=$(( dropped + 1 ))
-      continue
-    fi
-    seen=$(( seen + 1 ))
-
     if [[ $running == true ]]; then
-      snap=$(snapshot_for "$name" "$is_default") || continue
-      snapshots+="${snapshots:+,}\"$name\":$snap"
+      remaining=$((LIST_BUDGET - (SECONDS - start)))
+      (( remaining >= 2 )) || continue
+      while (( active >= SNAPSHOT_JOBS )); do
+        wait -n || true
+        mapfile -t JOB_PIDS < <(jobs -pr)
+        active=${#JOB_PIDS[@]}
+      done
+      remaining=$((LIST_BUDGET - (SECONDS - start)))
+      (( remaining >= 2 )) || continue
+      limit=$((remaining - 1))
+      (( limit <= 2 )) || limit=2
+      (
+        snapshot_for "$name" "$is_default" "$limit" |
+          jq -ec --arg name "$name" '
+            .result.snapshot
+            | select(type == "object" and (.agents | type == "array")
+                     and (.workspaces | type == "array") and (.tabs | type == "array"))
+            | select(all(.agents[]; type == "object")
+                     and all(.workspaces[]; type == "object") and all(.tabs[]; type == "object"))
+            | {($name): {
+                version: (.version // "" | tostring),
+                agents: [.agents[] | {
+                  title: (.terminal_title_stripped // .terminal_title // "" | tostring),
+                  status: (.agent_status // "unknown" | tostring),
+                  pane: (.pane_id // "" | tostring),
+                  workspace_id: (.workspace_id // "" | tostring),
+                  tab_id: (.tab_id // "" | tostring),
+                  seq: (.state_change_seq | tonumber? // 0)
+                }],
+                workspaces: [.workspaces[] | {
+                  workspace_id: (.workspace_id // "" | tostring),
+                  label: (.label // "" | tostring)
+                }],
+                tabs: [.tabs[] | {
+                  tab_id: (.tab_id // "" | tostring),
+                  label: (.label // "" | tostring),
+                  number: (.number // "" | tostring)
+                }]
+              }}' > "$RUN_DIR/snap.$name.tmp" 2>/dev/null &&
+          mv -- "$RUN_DIR/snap.$name.tmp" "$RUN_DIR/snap.$name.json"
+      ) &
+      JOB_PIDS+=($!)
+      active=$((active + 1))
       continue
     fi
 
@@ -435,29 +496,36 @@ cmd_list() {
     saved+="${saved:+,}\"$name\":$labels"
   done < <(printf '%s' "$sessions_json" |
     jq -r '.sessions[]? | "\(.name)\t\(.default // false)\t\(.running // false)\t\(.session_dir // "")"')
-  snapshots="{$snapshots}"
+  local job
+  for job in ${JOB_PIDS[@]+"${JOB_PIDS[@]}"}; do wait "$job" || true; done
+  JOB_PIDS=()
   saved="{$saved}"
   printf '%s' "$saved" | jq -e . >/dev/null 2>&1 || saved="{}"
-  # A truncated or unparseable reply from any one server must not take the
-  # whole list down with it.
-  printf '%s' "$snapshots" | jq -e . >/dev/null 2>&1 || snapshots='{}'
+  local -a files=()
+  local had_nullglob=0
+  shopt -q nullglob && had_nullglob=1
+  shopt -s nullglob
+  files=("$RUN_DIR"/snap.*.json)
+  (( had_nullglob )) || shopt -u nullglob
 
   # The big inputs go in through pipes, not arguments: Linux refuses any one
   # argument over 128 KB, and a single busy server's snapshot passes that.
-  printf '%s' "$sessions_json" | jq -c \
-    --slurpfile snapshotsIn <(printf '%s' "$snapshots") \
+  local output
+  output=$(printf '%s' "$sessions_json" | jq -c \
+    --slurpfile snapshotsIn <(if ((${#files[@]})); then cat "${files[@]}"; else cat /dev/null; fi) \
     --slurpfile savedIn <(printf '%s' "$saved") \
     --argjson agentCap "$AGENT_COUNT_CAP" \
+    --argjson sessionCap "$SESSION_COUNT_CAP" \
     --rawfile windows <(printf '%s' "$windows") \
     --rawfile ghosts <(printf '%s' "$ghosts") '
-    ($snapshotsIn[0]) as $snapshots | ($savedIn[0]) as $saved
+    ($snapshotsIn | add // {}) as $snapshots | ($savedIn[0]) as $saved
     | ($windows | split("\n") | map(select(length > 0) | split("\t"))
       | map({key: .[0], value: .[1]}) | from_entries) as $win
     | ($ghosts | split("\n") | map(select(length > 0))) as $ghostNames
     | [.sessions[]?
        | select(.name as $n | $ghostNames | index($n) | not)
        | .name as $name
-       | (($snapshots[$name].result.snapshot) // {}) as $snap
+       | ($snapshots[$name] // {}) as $snap
        | ($snap.agents // []) as $agents
        # Workspace labels live on the workspace, the agent only carries the id
        # it sits in, so they are joined here rather than in the panel: one
@@ -476,45 +544,32 @@ cmd_list() {
                               or ($l | test("^[0-9]+ · "))
                            then "" else $l end)})
           | from_entries) as $tablabels
+       | ($agents
+          | map({title: (.title | if . == "" then "untitled agent" else . end),
+                 status, pane,
+                 workspace: ($wslabels[.workspace_id] // ""),
+                 tab: ($tablabels[.tab_id] // ""), seq})
+          | sort_by(if   .status == "blocked" then 0
+                    elif .status == "done"    then 1
+                    elif .status == "working" then 2
+                    elif .status == "idle"    then 3
+                    else 4 end)
+          | .[0:$agentCap]) as $agentList
        | {
            name: $name,
            host: "",
            isDefault: (.default // false),
            running: (.running // false),
+           readable: ((.running // false) and ($snapshots | has($name))),
            version: ($snap.version // ""),
-           agents: ($agents | length),
-           working: ([$agents[] | select(.agent_status == "working")] | length),
-           blocked: ([$agents[] | select(.agent_status == "blocked")] | length),
-           idle:    ([$agents[] | select(.agent_status == "idle")] | length),
-           done:    ([$agents[] | select(.agent_status == "done")] | length),
+           agents: ($agentList | length),
+           hiddenAgents: (($agents | length) - ($agentList | length)),
+           working: ([$agentList[] | select(.status == "working")] | length),
+           blocked: ([$agentList[] | select(.status == "blocked")] | length),
+           idle:    ([$agentList[] | select(.status == "idle")] | length),
+           done:    ([$agentList[] | select(.status == "done")] | length),
            workspaces: (($snap.workspaces // []) | length),
-           agentList: ($agents
-                       | map({title: (.terminal_title_stripped // .terminal_title // ""),
-                              status: (.agent_status // "unknown"),
-                              pane: (.pane_id // ""),
-                              workspace: ($wslabels[.workspace_id // ""] // ""),
-                              tab: ($tablabels[.tab_id // ""] // ""),
-                              # Herdr bumps this every time an agent changes
-                              # state. Passed through so the panel can tell
-                              # two agents that both want something apart by
-                              # which one spoke last.
-                              seq: (.state_change_seq // 0)})
-                       | map(select(.title != ""))
-                       # The attention queue herdr uses itself, the order its
-                       # own agent panel takes when agent_panel_sort is set to
-                       # priority: what wants an answer, then what finished
-                       # unseen, then what is busy, then what is only waiting
-                       # for you to type. Sorting is stable in jq, so agents
-                       # sharing a state keep the order herdr laid them out in.
-                       | sort_by(if   .status == "blocked" then 0
-                                 elif .status == "done"    then 1
-                                 elif .status == "working" then 2
-                                 elif .status == "idle"    then 3
-                                 else 4 end)
-                                 # After the sort, so the cap keeps what wants an answer rather
-                                 # than whatever the server happened to list first. The counts
-                                 # above stay honest: they are taken from the full set.
-                                 | .[0:$agentCap]),
+           agentList: $agentList,
            projects: (if (.running // false)
                       then (($snap.workspaces // []) | map(.label // "")
                             | map(select(length > 0)) | unique)
@@ -524,15 +579,19 @@ cmd_list() {
     | sort_by([(if .isDefault then 0 else 1 end),
                (if .running then 0 else 1 end),
                (.name | ascii_downcase)])
+    | . as $all | .[0:$sessionCap] as $shown
     | {ok: true,
        error: "",
-       sessions: .,
-       running: ([.[] | select(.running)] | length),
-       agents: ([.[] | .agents] | add // 0),
-       blocked: ([.[] | .blocked] | add // 0),
-       done: ([.[] | .done] | add // 0),
-       working: ([.[] | .working] | add // 0)}
-  ' 2>/dev/null || die "unexpected output from herdr"
+       sessions: $shown,
+       hidden: (($all | length) - ($shown | length)),
+       running: ([$shown[] | select(.running)] | length),
+       agents: ([$shown[] | .agents] | add // 0),
+       blocked: ([$shown[] | .blocked] | add // 0),
+       done: ([$shown[] | .done] | add // 0),
+       working: ([$shown[] | .working] | add // 0)}
+  ' 2>/dev/null) || die "unexpected output from herdr"
+  over_byte_cap "$output" "$TOTAL_BYTE_CAP" && die "session list too large to show"
+  printf '%s\n' "$output"
 }
 
 # Another machine's sessions: this script runs there from stdin, so nothing is
@@ -540,11 +599,22 @@ cmd_list() {
 # the windows on this machine. Everything that comes back is treated the same
 # as a local server's output: capped, parsed, never executed.
 cmd_list_remote() {
-  local out windows
-  out=$(ssh_run "bash -s -- list --no-windows" < "$SCRIPT" 2>/dev/null |
-    head -c "$((TOTAL_BYTE_CAP + 1))") || true
+  local out windows pid rc=0
+  local -a SSH_OPTS
+  run_dir_init || die "could not make a temporary directory"
+  ssh_options
+  (
+    ulimit -f "$((TOTAL_BYTE_CAP / 1024 + 1))" || exit 1
+    exec timeout -k 1 8 ssh "${SSH_OPTS[@]}" -- "$HOST" "bash -s -- list --no-windows"
+  ) < "$SCRIPT" > "$RUN_DIR/remote.out" 2>/dev/null &
+  pid=$!
+  JOB_PIDS+=("$pid")
+  wait "$pid" || rc=$?
+  JOB_PIDS=()
+  out=$(head -c "$((TOTAL_BYTE_CAP + 1))" "$RUN_DIR/remote.out") || true
   [[ -n $out ]] || die "$HOST is unreachable"
   over_byte_cap "$out" "$TOTAL_BYTE_CAP" && die "$HOST answered with too much to read safely"
+  (( rc == 0 )) || die "$HOST is unreachable"
   windows=$(window_map || true)
   printf '%s' "$out" | jq -c --arg host "$HOST" --rawfile windows <(printf '%s' "$windows") '
     ($windows | split("\n") | map(select(length > 0) | split("\t"))
@@ -563,7 +633,7 @@ show_session() {
 
   local address workspace
   IFS=$'\t' read -r address workspace < <(
-    window_map | awk -F'\t' -v want="$HOST/$name" '$1 == want { print $2 "\t" $3; exit }')
+    window_map | awk -F'\t' -v want="$HOST/$name" '$1 == want { print $2 "\t" $3; exit }' || true)
 
   # Both values are spliced into a Lua expression, so they are checked for
   # shape first rather than escaped. A window address is hex; a workspace name
@@ -575,11 +645,11 @@ show_session() {
     # switch first, then focus - which also lands on the right monitor when
     # the workspace lives on the other screen.
     if [[ $workspace =~ ^(special:)?[A-Za-z0-9_-]{1,32}$ ]]; then
-      hyprctl dispatch "hl.dsp.focus({ workspace = '$workspace' })" >/dev/null 2>&1
+      bounded 2 hyprctl dispatch "hl.dsp.focus({ workspace = '$workspace' })" >/dev/null 2>&1 || return 3
     fi
     # Quattro's hyprctl parses its argument as Lua, so `dispatch focuswindow`
     # is a syntax error now. The address is single-quoted inside the Lua call.
-    hyprctl dispatch "hl.dsp.focus({ window = 'address:$address' })" >/dev/null 2>&1
+    bounded 2 hyprctl dispatch "hl.dsp.focus({ window = 'address:$address' })" >/dev/null 2>&1 || return 3
     return 0
   fi
 
@@ -589,7 +659,7 @@ show_session() {
   # workspace 7 and the name would stop meaning anything. Local sessions only:
   # a remote "4" names a workspace on the other machine.
   if [[ -z $HOST && $name =~ ^[0-9]{1,3}$ ]]; then
-    hyprctl dispatch "hl.dsp.focus({ workspace = '$name' })" >/dev/null 2>&1
+    bounded 2 hyprctl dispatch "hl.dsp.focus({ workspace = '$name' })" >/dev/null 2>&1 || return 3
   fi
 
   # `herdr --session <name>` attaches to the server that is already running
@@ -621,15 +691,27 @@ show_session() {
     return 1
   fi
 
+  local pid
   without_herdr_env "${launch[@]}" >/dev/null 2>&1 &
-  disown
+  pid=$!
+  sleep 0.3
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid" || return 2
+  fi
+  disown "$pid" 2>/dev/null || true
   return 0
 }
 
 cmd_open() {
   local name="${1-}"
   valid_session_name "$name" || die "not a session name"
-  show_session "$name" || die "no terminal available"
+  local rc=0
+  show_session "$name" || rc=$?
+  case $rc in
+    1) die "no terminal available" ;;
+    2) die "the terminal exited at once" ;;
+    3) die "could not focus the window" ;;
+  esac
   printf '{"ok":true}\n'
 }
 
@@ -652,13 +734,23 @@ cmd_focus() {
   local -a focus_cmd=(herdr)
   [[ $name == default ]] || focus_cmd+=(--session "$name")
   focus_cmd+=(agent focus "$pane")
+  local rc=0
   if [[ -n $HOST ]]; then
-    ssh_run "$(printf '%q ' "${focus_cmd[@]}")" </dev/null >/dev/null 2>&1 || true
+    ssh_run "$(printf '%q ' "${focus_cmd[@]}")" 4 </dev/null >/dev/null 2>&1 || rc=$?
   else
-    "${focus_cmd[@]}" >/dev/null 2>&1 || true
+    bounded 4 "${focus_cmd[@]}" >/dev/null 2>&1 || rc=$?
   fi
+  timed_out "$rc" && die "timed out: focus"
+  (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
+  (( rc == 0 )) || die "herdr could not focus that pane"
 
-  show_session "$name" || die "no terminal available"
+  rc=0
+  show_session "$name" || rc=$?
+  case $rc in
+    1) die "no terminal available" ;;
+    2) die "the terminal exited at once" ;;
+    3) die "could not focus the window" ;;
+  esac
   printf '{"ok":true}\n'
 }
 
@@ -666,17 +758,24 @@ cmd_focus() {
 
 # Whether a session of that name exists on the host this runs against,
 # running or not. An unreachable host counts as "cannot tell", which refuses.
-# Asked through this script's own list, so a leftover remote-client directory
-# does not count as a session.
+# Read herdr's complete list, including names beyond the display cap.
 session_exists() {
-  local json
+  local json rc=0
   if [[ -n $HOST ]]; then
-    json=$(ssh_run "bash -s -- list --no-windows" < "$SCRIPT" 2>/dev/null | head -c "$((TOTAL_BYTE_CAP + 1))") || true
+    json=$(ssh_run "herdr session list --json" 4 </dev/null 2>/dev/null |
+      head -c "$((SESSIONS_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   else
-    json=$(cmd_list --no-windows 2>/dev/null) || true
+    json=$(bounded 4 herdr session list --json 2>/dev/null |
+      head -c "$((SESSIONS_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   fi
-  printf '%s' "$json" | jq -e '.ok == true' >/dev/null 2>&1 || return 2
-  printf '%s' "$json" | jq -e --arg name "$1" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1
+  timed_out "$rc" && die "timed out: checking the name"
+  (( rc == 0 )) || return 2
+  over_byte_cap "$json" "$SESSIONS_BYTE_CAP" && return 2
+  printf '%s' "$json" | jq -e --arg name "$1" '
+    (.sessions | type == "array") and any(.sessions[]; .name == $name)' >/dev/null 2>&1 || {
+      printf '%s' "$json" | jq -e '.sessions | type == "array"' >/dev/null 2>&1 || return 2
+      return 1
+    }
 }
 
 # A new session and nothing else: a name that already exists is refused rather
@@ -702,16 +801,23 @@ cmd_new() {
 
   local launch_dir=""
   [[ -n $HOST ]] || launch_dir=$dir
-  show_session "$name" "$launch_dir" || die "no terminal available"
+  rc=0
+  show_session "$name" "$launch_dir" || rc=$?
+  case $rc in
+    1) die "no terminal available" ;;
+    2) die "the terminal exited at once" ;;
+    3) die "could not focus the window" ;;
+  esac
 
   if [[ -n $HOST && -n $dir ]]; then
-    local i running=""
-    for ((i = 0; i < 20; i++)); do
+    local running="" deadline=$((SECONDS + ${HERDR_TEST_NEW_DEADLINE:-30}))
+    while (( deadline - SECONDS >= 8 )); do
       # Capped like the local list: the other host decides how much it sends.
       running=$(ssh_run "herdr session list --json" </dev/null 2>/dev/null |
         head -c "$((SESSIONS_BYTE_CAP + 1))" |
         jq -r --arg name "$name" '.sessions[]? | select(.name == $name) | .running' 2>/dev/null) || true
       [[ $running == true ]] && break
+      (( deadline - SECONDS >= 8 )) || break
       sleep 0.5
     done
     [[ $running == true ]] || die "session started, but $HOST never reported it running"
@@ -725,15 +831,14 @@ cmd_new() {
 
 # Hand an agent a short instruction and wait for it to answer.
 #
-# The text arrives on stdin, never as an argument, so the panel does not have
-# to quote it. Over ssh it stays on stdin as well: the remote command is a
-# fixed `bash -c` that reads it into a variable, so nothing the text contains
-# is ever part of a command line on the other machine, whatever shell that
-# machine logs into.
+# The text crosses the panel and ssh on stdin, so nothing has to be quoted and
+# nothing it contains is part of a command line on the other machine. It is
+# still an argument to `herdr agent prompt`, so a local process list shows it
+# while the prompt waits.
 #
 # Waiting stops on idle, done or blocked, which are the states that want you
 # back. What comes back is the agent's own screen, capped like any other
-# output this script reads. Nothing is written to disk.
+# output this script reads. Nothing is kept on disk.
 cmd_prompt() {
   local name="${1-}" pane="${2-}"
   valid_session_name "$name" || die "not a session name"
@@ -788,37 +893,43 @@ cmd_prompt() {
   trap 'kill -TERM "$child" 2>/dev/null; exit 143' TERM INT HUP
   wait "$child" || rc=$?
   trap - TERM INT HUP
-  # 124 is the timeout running out, which still ends in reading the screen.
+  # A timed-out wait still ends in reading the screen.
   # 255 is ssh itself failing, so there is no agent to ask.
   (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
 
   # The agent's answer is capped like the screen. One cut short fails jq below
   # and counts as no status, the same as an agent that did not answer.
-  local agent screen
+  local agent screen read_rc=0
   if [[ -n $HOST ]]; then
-    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" </dev/null 2>/dev/null |
-      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
-    screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" \
-      </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    agent=$(ssh_run "$(printf '%q ' "${base[@]}" agent get "$pane")" 4 </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
+    timed_out "$read_rc" && die "timed out: reading the reply"
+    read_rc=0
+    screen=$(ssh_run "$(printf '%q ' "${base[@]}" agent read "$pane" --source recent --lines 60)" 4 \
+      </dev/null 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
   else
-    agent=$("${base[@]}" agent get "$pane" </dev/null 2>/dev/null |
-      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
-    screen=$("${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
-      head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    agent=$(bounded 4 "${base[@]}" agent get "$pane" </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
+    timed_out "$read_rc" && die "timed out: reading the reply"
+    read_rc=0
+    screen=$(bounded 4 "${base[@]}" agent read "$pane" --source recent --lines 60 </dev/null 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || read_rc=$?
   fi
-  over_byte_cap "$screen" "$SNAPSHOT_BYTE_CAP" && screen=${screen:0:SNAPSHOT_BYTE_CAP}
+  timed_out "$read_rc" && die "timed out: reading the reply"
+  over_byte_cap "$screen" "$SNAPSHOT_BYTE_CAP" && screen=$(printf '%s' "$screen" | head -c "$SNAPSHOT_BYTE_CAP") || true
 
   local status
   status=$(printf '%s' "$agent" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || true
   [[ -n $status ]] || [[ -n $screen ]] || die "could not reach that agent"
   # Any other exit is herdr refusing the prompt. The screen would show
   # whatever was there before, which reads as an answer when nothing was sent.
-  if (( rc != 0 && rc != 124 )); then
+  if (( rc != 0 )) && ! timed_out "$rc"; then
     [[ $status == blocked ]] && die "the agent is waiting on a question; nothing was sent"
     die "herdr did not start the prompt (agent is ${status:-unknown})"
   fi
-  jq -cn --arg status "${status:-timeout}" --arg output "$screen" \
-    '{ok: true, status: $status, output: $output}'
+  if timed_out "$rc"; then status=timeout; fi
+  printf '%s' "$screen" | jq -Rsc --arg status "$status" \
+    '{ok: true, status: $status, output: .}'
 }
 
 # ------------------------------------------------------------ kill / delete
@@ -828,27 +939,63 @@ cmd_prompt() {
 # is listening on is the only thing that tells them apart. `ss` is what maps a
 # listening unix socket back to the process holding it.
 server_pid_for() {
-  local socket="$1" pid
+  local socket="$1" line field pid comm rest start
+  local -a fields
   [[ -n $socket ]] || return 1
-  pid=$(ss -lpxn 2>/dev/null | awk -v want="$socket " '
-    index($0, want) == 0 { next }
-    match($0, /pid=[0-9]+/) { print substr($0, RSTART + 4, RLENGTH - 4); exit }')
-  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  while IFS= read -r line; do
+    read -r -a fields <<< "$line"
+    local found=false
+    for field in "${fields[@]}"; do [[ $field == "$socket" ]] && found=true; done
+    [[ $found == true ]] || continue
+    rest=$line
+    while [[ $rest =~ pid=([0-9]+) ]]; do
+      pid=${BASH_REMATCH[1]}
+      rest=${rest#*pid="$pid"}
+      { read -r comm < "$PROC/$pid/comm"; } 2>/dev/null || continue
+      [[ $comm == herdr ]] || continue
+      tr '\0' '\n' < "$PROC/$pid/cmdline" 2>/dev/null |
+        awk 'NR == 2 { ok = ($0 == "server") } END { exit !ok }' || continue
+      { read -r line < "$PROC/$pid/stat"; } 2>/dev/null || continue
+      line=${line##*") "}
+      read -r -a fields <<< "$line"
+      start=${fields[19]-}
+      [[ $start =~ ^[0-9]+$ ]] || continue
+      printf '%s %s' "$pid" "$start"
+      return 0
+    done
+  done < <(ss -lpxn 2>/dev/null)
+  return 1
+}
 
-  # A pid read out of another tool's output is a pid to check before signalling.
-  # It has to still be a herdr server: `ss` was run a moment ago, and a pid that
-  # exited since then belongs to whatever was started next.
-  local comm=""
-  { read -r comm < "/proc/$pid/comm"; } 2>/dev/null || return 1
+same_process() {
+  local pid=$1 start=$2 line comm
+  local -a fields
+  { read -r line < "$PROC/$pid/stat"; } 2>/dev/null || return 1
+  line=${line##*") "}
+  read -r -a fields <<< "$line"
+  [[ ${fields[19]-} == "$start" ]] || return 1
+  { read -r comm < "$PROC/$pid/comm"; } 2>/dev/null || return 1
   [[ $comm == herdr ]] || return 1
-  grep -qz server "/proc/$pid/cmdline" 2>/dev/null || return 1
+  tr '\0' '\n' < "$PROC/$pid/cmdline" 2>/dev/null |
+    awk 'NR == 2 { ok = ($0 == "server") } END { exit !ok }'
+}
 
-  printf '%s' "$pid"
+wait_gone() {
+  local pid=$1 start=$2 i
+  for ((i = 0; i < 10; i++)); do
+    same_process "$pid" "$start" || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 socket_of() {
-  herdr session list --json 2>/dev/null |
-    jq -r --arg name "$1" '.sessions[]? | select(.name == $name) | .socket_path // ""' 2>/dev/null
+  local out rc=0
+  out=$(bounded 4 herdr session list --json 2>/dev/null) || rc=$?
+  timed_out "$rc" && return "$rc"
+  (( rc == 0 )) || return 1
+  printf '%s' "$out" | jq -r --arg name "$1" '.sessions[]? | select(.name == $name) | .socket_path // ""' 2>/dev/null
 }
 
 # How a server is ended here, and the only way. `herdr session stop` asks over
@@ -863,28 +1010,22 @@ cmd_kill() {
   local name="${1-}"
   valid_session_name "$name" || die "not a session name"
 
-  local pid
-  pid=$(server_pid_for "$(socket_of "$name")") || die "no running server for that session"
+  local pid start server socket rc=0
+  socket=$(socket_of "$name") || rc=$?
+  timed_out "$rc" && die "timed out: finding the server"
+  (( rc == 0 )) || die "no running server for that session"
+  server=$(server_pid_for "$socket") || die "no running server for that session"
+  read -r pid start <<< "$server"
 
-  # A refused signal to a process that is still there is a server this user
-  # does not own; one that is gone had simply exited in the meantime.
+  # Recheck the process identity immediately before each signal.
+  same_process "$pid" "$start" || { printf '{"ok":true}\n'; return 0; }
   if ! kill -TERM "$pid" 2>/dev/null; then
-    [[ -e /proc/$pid ]] && die "not allowed to stop that server"
+    same_process "$pid" "$start" && die "not allowed to stop that server"
   fi
-  local i
-  for ((i = 0; i < 10; i++)); do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-  done
-  # SIGKILL is not instant either, so it gets the same wait, and a server
-  # still there after it is reported rather than called stopped.
-  if kill -0 "$pid" 2>/dev/null; then
+  if ! wait_gone "$pid" "$start"; then
+    same_process "$pid" "$start" || { printf '{"ok":true}\n'; return 0; }
     kill -KILL "$pid" 2>/dev/null || true
-    for ((i = 0; i < 10; i++)); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.1
-    done
-    kill -0 "$pid" 2>/dev/null && die "the server did not stop"
+    wait_gone "$pid" "$start" || die "the server did not stop"
   fi
 
   printf '{"ok":true}\n'
@@ -899,8 +1040,10 @@ cmd_delete() {
   # stderr is what it said went wrong, and it is the only thing that can tell
   # the panel why the row is still there; swallowing it reported a delete that
   # never happened.
-  local err
-  err=$(herdr session delete "$name" 2>&1 >/dev/null) || die "${err:-herdr could not delete that session}"
+  local err rc=0
+  err=$(bounded 8 herdr session delete "$name" 2>&1 >/dev/null) || rc=$?
+  timed_out "$rc" && die "timed out: delete"
+  (( rc == 0 )) || die "${err:-herdr could not delete that session}"
   printf '{"ok":true}\n'
 }
 
@@ -908,8 +1051,12 @@ cmd_delete() {
 # lookup reads that machine's `ss` and /proc. So the whole action runs there,
 # with this script on stdin and its (already validated) arguments quoted.
 remote_action() {
-  local out
-  out=$(ssh_run "bash -s -- $(printf '%q ' "$@")" < "$SCRIPT" 2>/dev/null | head -c 4096) || true
+  local out rc=0
+  # 12 s: longer than the remote side's own 8 s limits, so its message wins.
+  out=$(ssh_run "bash -s -- $(printf '%q ' "$@")" 12 < "$SCRIPT" 2>/dev/null |
+    head -c 4096; exit "${PIPESTATUS[0]}") || rc=$?
+  timed_out "$rc" && die "timed out: $1 on $HOST"
+  (( rc == 0 )) || die "$HOST is unreachable"
   [[ -n $out ]] || die "$HOST is unreachable"
   printf '%s\n' "$out"
 }
@@ -929,8 +1076,9 @@ fi
 case "${1:-list}" in
   list)
     shift || true
-    if [[ -n $HOST ]]; then cmd_list_remote
-    elif demo_on; then demo_list
+    if demo_on; then
+      if [[ -n $HOST ]]; then printf '{"ok":true,"error":"","sessions":[]}\n'; else demo_list; fi
+    elif [[ -n $HOST ]]; then cmd_list_remote
     else cmd_list "${1-}"; fi ;;
   # Every write is a no-op while the demo is on, so a click during a shoot
   # cannot reach a real session.

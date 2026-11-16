@@ -36,7 +36,9 @@ and the monitor's scale, like the rest of the desktop, and it stays below the
 bar. It lists this machine's sessions first, then each
 host in `~/.config/omarchy/herdr.json`, with every remote row named
 `host · session`. The title line says how each host answered: `●` something
-running, `○` nothing running, `–` no answer.
+running, `○` nothing running, `–` no answer, `…` not answered yet. A server
+whose agents could not be read says `unreadable`, and a second action
+started while one runs says `busy: … is still running`.
 
 Every key is listed under [Keybindings](#keybindings).
 
@@ -49,7 +51,9 @@ machine.
 `a`. An agent that is working, waiting on a question, or unreadable asks
 before the text is sent, because it would arrive in the middle of what the
 agent is doing. The answer appears under the line: only the reply, without the
-agent's footer or the conversation before it.
+agent's footer or the conversation before it. The text crosses the panel and
+ssh on stdin, but it is an argument to `herdr agent prompt`, so a local
+process list shows it while the prompt waits.
 
 **Other hosts** are polled only while the menu is open, over ssh, and a host
 that does not answer never delays the rest. Nothing is installed on them.
@@ -207,7 +211,8 @@ keeps the theme's urgent colour either way. The same entries in
   default terminal (`xdg-terminal-exec`), or foot without it. A terminal
   that runs all its windows in one process, like ghostty or footclient, cannot
   say which of them holds the session, so there "open" starts a new window
-  rather than guessing.
+  rather than guessing. The window launch is checked for 0.3 s, which catches a
+  terminal that exits at once, but only the first process of the launch chain.
 - **Click one of the agent lines** to land on that agent rather than on
   whatever the session was last showing: its pane is focused inside the server
   first, then the window comes up. That also marks a finished agent as seen, so
@@ -340,9 +345,11 @@ while the menu is open. No file means this machine only.
 a session's server.
 
 **Each remote host** needs `bash`, `jq` and `herdr` on the ssh user's `PATH`,
-plus `ss`, `grep`, `awk` and a readable `/proc` for the kill button, and a key that logs in without a prompt: every call uses `BatchMode=yes`. The
+plus `ss`, `grep`, `awk` and a readable `/proc` for the kill button, and a key
+that logs in without a prompt: every call uses `BatchMode=yes`. The
 data script is piped to the host on each call, so nothing is installed there,
-and one shared connection keeps polling to a handshake a minute.
+and one shared connection keeps polling to a handshake a minute. The collector
+there ends by itself within 6 s, even if the connection drops.
 
 ## Removing it
 
@@ -360,9 +367,10 @@ omarchy plugin remove nixarchy.herdr
 Then delete the `SUPER + SHIFT + H` line from `~/.config/hypr/bindings.lua`,
 run `hyprctl reload`, and remove `~/.config/omarchy/herdr.json` if you made one.
 
-Nothing about your work is kept: every value on screen is read from herdr at
-the moment it is drawn, and no session name, agent title, prompt or reply is
-written to disk, locally or on another host.
+Nothing is kept after a refresh: every value on screen is read from herdr at
+the moment it is drawn. While a list is being built, the snapshots sit briefly
+in a private (mode 700) directory under `$XDG_RUNTIME_DIR` (or `/tmp`), which is removed
+when the refresh ends, locally or on another host. No prompt or reply is stored.
 
 The one file it can create is the demo flag, and only if you turned demo mode
 on. It is empty and holds nothing about you, but it outlives the plugin:
