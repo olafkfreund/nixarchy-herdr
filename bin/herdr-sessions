@@ -822,15 +822,14 @@ cmd_new() {
 
 # Hand an agent a short instruction and wait for it to answer.
 #
-# The text arrives on stdin, never as an argument, so the panel does not have
-# to quote it. Over ssh it stays on stdin as well: the remote command is a
-# fixed `bash -c` that reads it into a variable, so nothing the text contains
-# is ever part of a command line on the other machine, whatever shell that
-# machine logs into.
+# The text crosses the panel and ssh on stdin, so nothing has to be quoted and
+# nothing it contains is part of a command line on the other machine. It is
+# still an argument to `herdr agent prompt`, so a local process list shows it
+# while the prompt waits.
 #
 # Waiting stops on idle, done or blocked, which are the states that want you
 # back. What comes back is the agent's own screen, capped like any other
-# output this script reads. Nothing is written to disk.
+# output this script reads. Nothing is kept on disk.
 cmd_prompt() {
   local name="${1-}" pane="${2-}"
   valid_session_name "$name" || die "not a session name"

@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: bash -n
-        run: bash -n bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh
+        run: for f in bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh; do bash -n "$f"; done
       - name: shellcheck
         run: shellcheck bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh
       - name: session actions

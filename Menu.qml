@@ -285,8 +285,9 @@ Item {
     return paragraphs.slice(-6).join("\n")
   }
 
-  // The prompt goes over stdin, never argv. Closing stdin after the write is
-  // what tells the script the text is complete.
+  // The prompt crosses the panel and ssh on stdin, but the script hands it to
+  // herdr as an argument, so local processes can see it while it waits.
+  // Closing stdin after the write is what tells the script it is complete.
   Process {
     id: promptProc
     property string text: ""
