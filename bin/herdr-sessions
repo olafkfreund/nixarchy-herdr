@@ -71,6 +71,23 @@ SESSION_FILE_CAP=$((1 * 1024 * 1024))
 TOTAL_BYTE_CAP=$((8 * 1024 * 1024))
 SESSION_COUNT_CAP=200
 AGENT_COUNT_CAP=500
+LIST_BUDGET=6
+SNAPSHOT_JOBS=4
+
+RUN_DIR="" ; JOB_PIDS=()
+run_dir_init() {               # idempotent; called by cmd_list and cmd_list_remote
+  [[ -n $RUN_DIR ]] && return 0
+  local base=${XDG_RUNTIME_DIR:-/tmp}
+  RUN_DIR=$(umask 077; mktemp -d "$base/nixarchy-herdr.XXXXXX") || return 1
+  trap run_dir_cleanup EXIT
+  trap 'exit 143' TERM INT HUP   # exit runs the EXIT trap once
+}
+run_dir_cleanup() {
+  local p
+  for p in "${JOB_PIDS[@]}"; do kill -TERM "$p" 2>/dev/null || true; done
+  for p in "${JOB_PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
+  [[ -n $RUN_DIR ]] && rm -rf -- "$RUN_DIR"
+}
 
 # Whether a read came back at its ceiling, which means there was more to come.
 # Callers pipe through `head -c cap+1`, so that one extra byte is the evidence.
@@ -80,6 +97,7 @@ AGENT_COUNT_CAP=500
 # and makes the whole pipeline non-zero on a perfectly good read, and under
 # `set -e` that would take the script down with it.
 over_byte_cap() {
+  local LC_ALL=C
   [ "$(printf '%s' "$1" | wc -c)" -gt "$2" ]
 }
 
@@ -193,10 +211,10 @@ cmd_demo() {
 demo_list() {
   cat <<'DEMO'
 {"ok":true,"error":"","sessions":[
-{"name":"default","isDefault":true,"running":true,"version":"0.8.2","agents":2,"working":1,"blocked":0,"idle":1,"done":0,"workspaces":2,"projects":["checkout-service","design-tokens"],"agentList":[{"title":"Rewrite the receipt formatter","status":"working","pane":"w1:p1","tab":"Receipts","seq":11},{"title":"Token names for the new palette","status":"idle","pane":"w2:p1","tab":"Palette","seq":9}],"windowAddress":"0x1"},
-{"name":"3","isDefault":false,"running":true,"version":"0.8.2","agents":1,"working":0,"blocked":1,"idle":0,"done":0,"workspaces":1,"projects":["billing-api"],"agentList":[{"title":"Drop the legacy invoice table","status":"blocked","pane":"w1:p1","tab":"Migration","seq":14}],"windowAddress":"0x2"},
-{"name":"5","isDefault":false,"running":true,"version":"0.8.2","agents":2,"working":0,"blocked":0,"idle":0,"done":2,"workspaces":1,"projects":["docs-site"],"agentList":[{"title":"Upgrade the search index","status":"done","pane":"w1:p1","tab":"Search","seq":12},{"title":"Fix the broken anchor links","status":"done","pane":"w1:p2","tab":"Anchors","seq":13}],"windowAddress":""},
-{"name":"9","isDefault":false,"running":false,"version":"","agents":0,"working":0,"blocked":0,"idle":0,"done":0,"workspaces":0,"projects":[],"agentList":[],"windowAddress":""}
+{"name":"default","isDefault":true,"running":true,"readable":true,"version":"0.8.2","agents":2,"working":1,"blocked":0,"idle":1,"done":0,"workspaces":2,"projects":["checkout-service","design-tokens"],"agentList":[{"title":"Rewrite the receipt formatter","status":"working","pane":"w1:p1","tab":"Receipts","seq":11},{"title":"Token names for the new palette","status":"idle","pane":"w2:p1","tab":"Palette","seq":9}],"windowAddress":"0x1"},
+{"name":"3","isDefault":false,"running":true,"readable":true,"version":"0.8.2","agents":1,"working":0,"blocked":1,"idle":0,"done":0,"workspaces":1,"projects":["billing-api"],"agentList":[{"title":"Drop the legacy invoice table","status":"blocked","pane":"w1:p1","tab":"Migration","seq":14}],"windowAddress":"0x2"},
+{"name":"5","isDefault":false,"running":true,"readable":true,"version":"0.8.2","agents":2,"working":0,"blocked":0,"idle":0,"done":2,"workspaces":1,"projects":["docs-site"],"agentList":[{"title":"Upgrade the search index","status":"done","pane":"w1:p1","tab":"Search","seq":12},{"title":"Fix the broken anchor links","status":"done","pane":"w1:p2","tab":"Anchors","seq":13}],"windowAddress":""},
+{"name":"9","isDefault":false,"running":false,"readable":false,"version":"","agents":0,"working":0,"blocked":0,"idle":0,"done":0,"workspaces":0,"projects":[],"agentList":[],"windowAddress":""}
 ],"running":3,"agents":5,"blocked":1,"done":2,"working":1}
 DEMO
 }
@@ -348,28 +366,27 @@ window_map() {
 # left off for the default one: passing it by name would address a *named*
 # session that happens to be called "default", which is a different server.
 snapshot_for() {
-  local name="$1" is_default="$2"
-  local out
-  # `|| true` because the cap in front of this can close the pipe on the
-  # server, and a SIGPIPE there is a bounded read rather than a failure. The
-  # timeout is for a server that takes the connection and never answers: its
-  # row falls back like any other that did not reply, instead of stalling
-  # every refresh behind it.
+  local name="$1" is_default="$2" limit="$3"
+  local out rc=0
+  # A failed or timed-out read has no snapshot. The extra byte reveals an
+  # oversized answer even when head closes the pipe on the server.
   if [[ $is_default == true ]]; then
-    out=$(timeout 2 herdr api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(bounded "$limit" herdr api snapshot 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   else
-    out=$(timeout 2 herdr --session "$name" api snapshot 2>/dev/null | head -c "$((SNAPSHOT_BYTE_CAP + 1))") || true
+    out=$(bounded "$limit" herdr --session "$name" api snapshot 2>/dev/null |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
   fi
+  (( rc == 0 )) || return 1
   [[ -n $out ]] || return 1
-  # One oversized server is skipped rather than allowed to take the list down:
-  # the row falls back to what session.json remembers, the same as a session
-  # whose server never answered.
+  # One oversized server is unreadable rather than allowed to take the list down.
   over_byte_cap "$out" "$SNAPSHOT_BYTE_CAP" && return 1
   printf '%s' "$out"
 }
 
 cmd_list() {
-  local sessions_json
+  local LC_ALL=C sessions_json start=$SECONDS
+  run_dir_init || die "could not make a temporary directory"
   # Bounded in time as well as size: an empty answer is "could not reach".
   sessions_json=$(timeout 4 herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
   [[ -n $sessions_json ]] || die "could not reach herdr"
@@ -380,43 +397,62 @@ cmd_list() {
   local windows=""
   [[ ${1-} == --no-windows ]] || windows=$(window_map || true)
 
-  # The snapshots are collected here rather than in jq, because each one is a
-  # separate command. They go in as a name-keyed object, so the merge below is
-  # a lookup instead of a search.
-  #
-  # The object is assembled as text rather than folded together with a jq call
-  # per session: this runs every few seconds, and a jq start costs more than
-  # everything else in this function put together. The key is safe to splice
-  # in unquoted because valid_session_name has already refused anything but
-  # letters, digits, dot, dash and underscore.
+  # Snapshots are projected in bounded jobs, then merged by session name.
   # A session that is not running has no server to ask, but it has not
   # forgotten anything either: herdr writes the layout to session.json, and
   # that file still names the workspaces and the directory each one was opened
   # in. Reading it is what makes a stopped row say what it is holding rather
   # than only that it is down - the difference between a session worth starting
   # back up and a name left over from an afternoon.
-  local snapshots='' saved='' ghosts='' name is_default running dir snap labels
-  # Two ceilings on the loop itself. The per-source caps above bound any one
-  # answer; these bound the sum of them, which is the case a hundred sessions
-  # each just under their own limit would otherwise walk straight through.
-  local seen=0 dropped=0
+  local saved='' ghosts='' name is_default running dir labels remaining limit active=0
   while IFS=$'\t' read -r name is_default running dir; do
     [[ -n $name ]] || continue
     valid_session_name "$name" || continue
 
-    if (( seen >= SESSION_COUNT_CAP )); then
-      dropped=$(( dropped + 1 ))
-      continue
-    fi
-    if (( ${#snapshots} + ${#saved} > TOTAL_BYTE_CAP )); then
-      dropped=$(( dropped + 1 ))
-      continue
-    fi
-    seen=$(( seen + 1 ))
-
     if [[ $running == true ]]; then
-      snap=$(snapshot_for "$name" "$is_default") || continue
-      snapshots+="${snapshots:+,}\"$name\":$snap"
+      remaining=$((LIST_BUDGET - (SECONDS - start)))
+      (( remaining >= 2 )) || continue
+      while (( active >= SNAPSHOT_JOBS )); do
+        wait -n || true
+        mapfile -t JOB_PIDS < <(jobs -pr)
+        active=${#JOB_PIDS[@]}
+      done
+      remaining=$((LIST_BUDGET - (SECONDS - start)))
+      (( remaining >= 2 )) || continue
+      limit=$((remaining - 1))
+      (( limit <= 2 )) || limit=2
+      (
+        snapshot_for "$name" "$is_default" "$limit" |
+          jq -ec --arg name "$name" '
+            .result.snapshot
+            | select(type == "object" and (.agents | type == "array")
+                     and (.workspaces | type == "array") and (.tabs | type == "array"))
+            | select(all(.agents[]; type == "object")
+                     and all(.workspaces[]; type == "object") and all(.tabs[]; type == "object"))
+            | {($name): {
+                version: (.version // "" | tostring),
+                agents: [.agents[] | {
+                  title: (.terminal_title_stripped // .terminal_title // "" | tostring),
+                  status: (.agent_status // "unknown" | tostring),
+                  pane: (.pane_id // "" | tostring),
+                  workspace_id: (.workspace_id // "" | tostring),
+                  tab_id: (.tab_id // "" | tostring),
+                  seq: (.state_change_seq | tonumber? // 0)
+                }],
+                workspaces: [.workspaces[] | {
+                  workspace_id: (.workspace_id // "" | tostring),
+                  label: (.label // "" | tostring)
+                }],
+                tabs: [.tabs[] | {
+                  tab_id: (.tab_id // "" | tostring),
+                  label: (.label // "" | tostring),
+                  number: (.number // "" | tostring)
+                }]
+              }}' > "$RUN_DIR/snap.$name.tmp" 2>/dev/null &&
+          mv -- "$RUN_DIR/snap.$name.tmp" "$RUN_DIR/snap.$name.json"
+      ) &
+      JOB_PIDS+=($!)
+      active=$((active + 1))
       continue
     fi
 
@@ -444,29 +480,36 @@ cmd_list() {
     saved+="${saved:+,}\"$name\":$labels"
   done < <(printf '%s' "$sessions_json" |
     jq -r '.sessions[]? | "\(.name)\t\(.default // false)\t\(.running // false)\t\(.session_dir // "")"')
-  snapshots="{$snapshots}"
+  local job
+  for job in "${JOB_PIDS[@]}"; do wait "$job" || true; done
+  JOB_PIDS=()
   saved="{$saved}"
   printf '%s' "$saved" | jq -e . >/dev/null 2>&1 || saved="{}"
-  # A truncated or unparseable reply from any one server must not take the
-  # whole list down with it.
-  printf '%s' "$snapshots" | jq -e . >/dev/null 2>&1 || snapshots='{}'
+  local -a files=()
+  local had_nullglob=0
+  shopt -q nullglob && had_nullglob=1
+  shopt -s nullglob
+  files=("$RUN_DIR"/snap.*.json)
+  (( had_nullglob )) || shopt -u nullglob
 
   # The big inputs go in through pipes, not arguments: Linux refuses any one
   # argument over 128 KB, and a single busy server's snapshot passes that.
-  printf '%s' "$sessions_json" | jq -c \
-    --slurpfile snapshotsIn <(printf '%s' "$snapshots") \
+  local output
+  output=$(printf '%s' "$sessions_json" | jq -c \
+    --slurpfile snapshotsIn <(if ((${#files[@]})); then cat "${files[@]}"; else cat /dev/null; fi) \
     --slurpfile savedIn <(printf '%s' "$saved") \
     --argjson agentCap "$AGENT_COUNT_CAP" \
+    --argjson sessionCap "$SESSION_COUNT_CAP" \
     --rawfile windows <(printf '%s' "$windows") \
     --rawfile ghosts <(printf '%s' "$ghosts") '
-    ($snapshotsIn[0]) as $snapshots | ($savedIn[0]) as $saved
+    ($snapshotsIn | add // {}) as $snapshots | ($savedIn[0]) as $saved
     | ($windows | split("\n") | map(select(length > 0) | split("\t"))
       | map({key: .[0], value: .[1]}) | from_entries) as $win
     | ($ghosts | split("\n") | map(select(length > 0))) as $ghostNames
     | [.sessions[]?
        | select(.name as $n | $ghostNames | index($n) | not)
        | .name as $name
-       | (($snapshots[$name].result.snapshot) // {}) as $snap
+       | ($snapshots[$name] // {}) as $snap
        | ($snap.agents // []) as $agents
        # Workspace labels live on the workspace, the agent only carries the id
        # it sits in, so they are joined here rather than in the panel: one
@@ -485,45 +528,32 @@ cmd_list() {
                               or ($l | test("^[0-9]+ · "))
                            then "" else $l end)})
           | from_entries) as $tablabels
+       | ($agents
+          | map({title: (.title | if . == "" then "untitled agent" else . end),
+                 status, pane,
+                 workspace: ($wslabels[.workspace_id] // ""),
+                 tab: ($tablabels[.tab_id] // ""), seq})
+          | sort_by(if   .status == "blocked" then 0
+                    elif .status == "done"    then 1
+                    elif .status == "working" then 2
+                    elif .status == "idle"    then 3
+                    else 4 end)
+          | .[0:$agentCap]) as $agentList
        | {
            name: $name,
            host: "",
            isDefault: (.default // false),
            running: (.running // false),
+           readable: ((.running // false) and ($snapshots | has($name))),
            version: ($snap.version // ""),
-           agents: ($agents | length),
-           working: ([$agents[] | select(.agent_status == "working")] | length),
-           blocked: ([$agents[] | select(.agent_status == "blocked")] | length),
-           idle:    ([$agents[] | select(.agent_status == "idle")] | length),
-           done:    ([$agents[] | select(.agent_status == "done")] | length),
+           agents: ($agentList | length),
+           hiddenAgents: (($agents | length) - ($agentList | length)),
+           working: ([$agentList[] | select(.status == "working")] | length),
+           blocked: ([$agentList[] | select(.status == "blocked")] | length),
+           idle:    ([$agentList[] | select(.status == "idle")] | length),
+           done:    ([$agentList[] | select(.status == "done")] | length),
            workspaces: (($snap.workspaces // []) | length),
-           agentList: ($agents
-                       | map({title: (.terminal_title_stripped // .terminal_title // ""),
-                              status: (.agent_status // "unknown"),
-                              pane: (.pane_id // ""),
-                              workspace: ($wslabels[.workspace_id // ""] // ""),
-                              tab: ($tablabels[.tab_id // ""] // ""),
-                              # Herdr bumps this every time an agent changes
-                              # state. Passed through so the panel can tell
-                              # two agents that both want something apart by
-                              # which one spoke last.
-                              seq: (.state_change_seq // 0)})
-                       | map(select(.title != ""))
-                       # The attention queue herdr uses itself, the order its
-                       # own agent panel takes when agent_panel_sort is set to
-                       # priority: what wants an answer, then what finished
-                       # unseen, then what is busy, then what is only waiting
-                       # for you to type. Sorting is stable in jq, so agents
-                       # sharing a state keep the order herdr laid them out in.
-                       | sort_by(if   .status == "blocked" then 0
-                                 elif .status == "done"    then 1
-                                 elif .status == "working" then 2
-                                 elif .status == "idle"    then 3
-                                 else 4 end)
-                                 # After the sort, so the cap keeps what wants an answer rather
-                                 # than whatever the server happened to list first. The counts
-                                 # above stay honest: they are taken from the full set.
-                                 | .[0:$agentCap]),
+           agentList: $agentList,
            projects: (if (.running // false)
                       then (($snap.workspaces // []) | map(.label // "")
                             | map(select(length > 0)) | unique)
@@ -533,15 +563,19 @@ cmd_list() {
     | sort_by([(if .isDefault then 0 else 1 end),
                (if .running then 0 else 1 end),
                (.name | ascii_downcase)])
+    | . as $all | .[0:$sessionCap] as $shown
     | {ok: true,
        error: "",
-       sessions: .,
-       running: ([.[] | select(.running)] | length),
-       agents: ([.[] | .agents] | add // 0),
-       blocked: ([.[] | .blocked] | add // 0),
-       done: ([.[] | .done] | add // 0),
-       working: ([.[] | .working] | add // 0)}
-  ' 2>/dev/null || die "unexpected output from herdr"
+       sessions: $shown,
+       hidden: (($all | length) - ($shown | length)),
+       running: ([$shown[] | select(.running)] | length),
+       agents: ([$shown[] | .agents] | add // 0),
+       blocked: ([$shown[] | .blocked] | add // 0),
+       done: ([$shown[] | .done] | add // 0),
+       working: ([$shown[] | .working] | add // 0)}
+  ' 2>/dev/null) || die "unexpected output from herdr"
+  over_byte_cap "$output" "$TOTAL_BYTE_CAP" && die "session list too large to show"
+  printf '%s\n' "$output"
 }
 
 # Another machine's sessions: this script runs there from stdin, so nothing is
@@ -967,8 +1001,9 @@ fi
 case "${1:-list}" in
   list)
     shift || true
-    if [[ -n $HOST ]]; then cmd_list_remote
-    elif demo_on; then demo_list
+    if demo_on; then
+      if [[ -n $HOST ]]; then printf '{"ok":true,"error":"","sessions":[]}\n'; else demo_list; fi
+    elif [[ -n $HOST ]]; then cmd_list_remote
     else cmd_list "${1-}"; fi ;;
   # Every write is a no-op while the demo is on, so a click during a shoot
   # cannot reach a real session.

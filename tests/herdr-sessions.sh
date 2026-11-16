@@ -38,14 +38,19 @@ for var in ${!HERDR_@}; do unset "$var"; done
 cat > "$tmp/bin/herdr" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$@" >> "$FAKE_LOG"
-[[ ${1-} == --session ]] && shift 2
+name=s1
+if [[ ${1-} == --session ]]; then name=$2; shift 2; fi
 case "$1 ${2-}" in
   "session list")
     sleep "${FAKE_LIST_SLEEP:-0}" >/dev/null 2>&1
-    printf '{"sessions":[{"name":"s1","default":false,"running":true,"session_dir":"/nonexistent"}]}\n' ;;
+    printf '{"sessions":%s}\n' "$FAKE_SESSIONS" ;;
   "api snapshot")
+    sleep_var="FAKE_SNAPSHOT_SLEEP_$name"
+    body_var="FAKE_SNAPSHOT_BODY_$name"
+    printf 'snapshot-pid %s %s\n' "$name" "$$" >> "$FAKE_LOG"
     # stdout off the sleep, or a killed fake would leave it holding the pipe.
-    sleep "${FAKE_SNAPSHOT_SLEEP:-0}" >/dev/null 2>&1
+    sleep "${!sleep_var:-${FAKE_SNAPSHOT_SLEEP:-0}}" >/dev/null 2>&1
+    if [[ -n ${!body_var-} ]]; then printf '%s\n' "${!body_var}"; exit; fi
     pad=$(head -c "${FAKE_SNAPSHOT_BYTES:-0}" /dev/zero | tr '\0' x)
     agents=${FAKE_AGENTS:-'[{"agent_status":"idle","pane_id":"w1:p1","workspace_id":"ws1","terminal_title":"fake agent"}]'}
     printf '{"result":{"snapshot":{"version":"fake","pad":"%s","workspaces":[{"workspace_id":"ws1","label":"proj"}],"tabs":%s,"agents":%s}}}\n' \
@@ -129,11 +134,14 @@ check() {
 reset() {
   : > "$FAKE_LOG"
   echo "[]" > "$FAKE_CLIENTS"
+  export FAKE_SESSIONS='[{"name":"s1","default":false,"running":true,"session_dir":"/nonexistent"}]'
   unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS \
     FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN FAKE_SSH_PIPE FAKE_PROMPT_SLEEP \
     FAKE_AGENTS FAKE_TABS FAKE_FOCUS_SLEEP FAKE_GET_SLEEP FAKE_READ_SLEEP \
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
     FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE
+  local var
+  for var in ${!FAKE_SNAPSHOT_BODY_@} ${!FAKE_SNAPSHOT_SLEEP_@}; do unset "$var"; done
 }
 
 # fake_client <args...>: a live process with that command line, for the window
@@ -404,5 +412,136 @@ reset
 out=$(FAKE_LIST_SLEEP=30 "$script" delete s1)
 check "27 delete unaffected by list" jq -e '.ok == true' <<<"$out" ||
   printf '  got: %.200s\n' "$out"
+
+# Step 2: snapshot projection is isolated per session, and listing is bounded.
+# shellcheck disable=SC2089 # literal JSON is passed through the environment
+three='[{"name":"a","running":true},{"name":"b","running":true},{"name":"c","running":true}]'
+for field in agents workspaces tabs; do
+  reset
+  export FAKE_SESSIONS=$three
+  case $field in
+    agents) export FAKE_SNAPSHOT_BODY_b='{"result":{"snapshot":{"agents":"bad","workspaces":[],"tabs":[]}}}' ;;
+    workspaces) export FAKE_SNAPSHOT_BODY_b='{"result":{"snapshot":{"agents":[],"workspaces":"bad","tabs":[]}}}' ;;
+    tabs) export FAKE_SNAPSHOT_BODY_b='{"result":{"snapshot":{"agents":[],"workspaces":[],"tabs":7}}}' ;;
+  esac
+  out=$("$script" list)
+  check "28 malformed $field isolated" jq -e \
+    '[.sessions[] | .readable] == [true,false,true]
+     and [.sessions[] | .agents] == [1,0,1]' <<<"$out" ||
+    printf '  got: %.200s\n' "$out"
+done
+
+reset
+export FAKE_SNAPSHOT_BODY_s1='{"result":{"snapshot":{"agents":[{"terminal_title":7,"state_change_seq":"12","pane_id":"w1:p1"}],"workspaces":[],"tabs":[]}}}'
+out=$("$script" list)
+check "29 coerced title and sequence" jq -e \
+  '.sessions[0].agentList[0] | .title == "7" and .seq == 12' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+export FAKE_SESSIONS=$three FAKE_SNAPSHOT_SLEEP_a=1.5 \
+  FAKE_SNAPSHOT_SLEEP_b=1.5 FAKE_SNAPSHOT_SLEEP_c=1.5
+start=$(date +%s%N)
+out=$("$script" list)
+took=$(( ($(date +%s%N) - start) / 1000000 ))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "30 snapshots run together" jq -e --argjson took "$took" \
+  '.sessions | length == 3' <<<"$out" &&
+  check "30 snapshots under 3 seconds" test "$took" -lt 3000 ||
+  printf '  took %sms, got: %.200s\n' "$took" "$out"
+
+reset
+FAKE_SESSIONS=$(jq -nc '[range(12) | {name: ("s" + tostring), running: true}]')
+export FAKE_SNAPSHOT_SLEEP=30
+start=$(date +%s%N)
+out=$("$script" list)
+took=$(( ($(date +%s%N) - start) / 1000000 ))
+check "31 twelve wedged bounded" jq -e \
+  '(.sessions | length) == 12 and ([.sessions[] | select(.readable == false)] | length) >= 8' <<<"$out" &&
+  check "31 twelve wedged under 8 seconds" test "$took" -lt 8000 ||
+  printf '  took %sms, got: %.200s\n' "$took" "$out"
+
+reset
+export FAKE_SESSIONS=$three
+export FAKE_SNAPSHOT_BODY_a='bad' FAKE_SNAPSHOT_BODY_b='bad' FAKE_SNAPSHOT_BODY_c='bad'
+out=$("$script" list)
+check "32 all snapshots fail" jq -e \
+  '.ok == true and [.sessions[] | .readable] == [false,false,false]' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+export FAKE_SESSIONS='[]'
+out=$("$script" list)
+check "33 no running sessions" jq -e '.ok == true and .sessions == []' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+export FAKE_SNAPSHOT_BODY_s1='{"result":{"snapshot":{"agents":[{"agent_status":"idle","pane_id":"w1:p1"}],"workspaces":[],"tabs":[]}}}'
+out=$("$script" list)
+check "34 untitled agent" jq -e \
+  '.sessions[0].agentList[0].title == "untitled agent"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+export FAKE_AGENTS
+FAKE_AGENTS=$(jq -nc '[range(501) | {agent_status:"blocked", pane_id:"w1:p1", terminal_title:"agent"}]')
+out=$("$script" list)
+check "35 counts follow shown agents" jq -e \
+  '.sessions[0] | .agents == 500 and .blocked == 500
+   and .hiddenAgents == 1 and (.agentList | length) == 500' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+FAKE_SESSIONS=$(jq -nc '[range(1;202) | {name: ("s" + (tostring | ("000" + .)[-3:])), running:true}]')
+out=$("$script" list)
+check "36 session display cap" jq -e \
+  '.sessions | length == 200' <<<"$out" &&
+  check "36 hidden session count" jq -e '.hidden == 1' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+out=$("$script" new s201)
+check "36 hidden name still exists" jq -e \
+  '.error == "a session called s201 already exists"' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$(FAKE_SNAPSHOT_BYTES=$((2 * 1024 * 1024)) "$script" list)
+check "37 oversized snapshot unreadable" jq -e \
+  '.sessions[0].readable == false' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+"$script" demo on >/dev/null
+out=$("$script" --host razer list)
+"$script" demo off >/dev/null
+check "38 demo remote list" jq -e \
+  '.ok == true and .sessions == []' <<<"$out" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+out=$("$script" list)
+check "39 no run directory left" test -z "$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print)" ||
+  printf '  got: %.200s\n' "$out"
+
+reset
+export FAKE_SESSIONS=$three FAKE_SNAPSHOT_SLEEP_a=30 \
+  FAKE_SNAPSHOT_SLEEP_b=30 FAKE_SNAPSHOT_SLEEP_c=30
+"$script" list >/dev/null 2>&1 &
+pid=$!
+for ((i = 0; i < 50; i++)); do
+  [[ -n $(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print) ]] &&
+    grep -q '^snapshot-pid ' "$FAKE_LOG" && break
+  sleep 0.05
+done
+kill -TERM "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+check "40 TERM removes run directory" test -z \
+  "$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print)"
+for ((i = 0; i < 30; i++)); do
+  surviving=$(awk '$1 == "snapshot-pid" { print $3 }' "$FAKE_LOG" |
+    while read -r child; do kill -0 "$child" 2>/dev/null && printf '%s\n' "$child"; done)
+  [[ -n $surviving ]] || break
+  sleep 0.1
+done
+check "40 TERM leaves no snapshot child" test -z "$surviving"
 
 exit "$failed"
