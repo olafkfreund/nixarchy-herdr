@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 21
 intent: intent/2026-11-16-21-upstream-sync.md
 ---
