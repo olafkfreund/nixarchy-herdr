@@ -231,10 +231,150 @@ DEMO
 }
 
 require_tools() {
-  local tool
-  for tool in herdr jq; do
-    command -v "$tool" >/dev/null 2>&1 || die "$tool is not installed"
-  done
+  command -v jq >/dev/null 2>&1 || die "jq is not installed"
+  case ${1-} in
+    app-*) command -v hc >/dev/null 2>&1 || die "could not read herdr-core" ;;
+    list) return 0 ;;
+    *) command -v herdr >/dev/null 2>&1 || die "herdr is not installed" ;;
+  esac
+}
+
+valid_hc_address() {
+  [[ ${1-} =~ ^([A-Za-z0-9][A-Za-z0-9._-]{0,31}/)?t[0-9a-z]{1,9}$ ]]
+}
+
+app_snapshot() {
+  run_dir_init || die "could not make a temporary directory"
+  mkfifo "$RUN_DIR/hc-events" || die "could not read herdr-core"
+  bounded 3 hc events --json 2>/dev/null > "$RUN_DIR/hc-events" &
+  local producer=$! snapshot
+  JOB_PIDS+=("$producer")
+  snapshot=$(head -c "$((TOTAL_BYTE_CAP + 1))" < "$RUN_DIR/hc-events" | head -n 1) || true
+  kill_tree "$producer"
+  wait "$producer" 2>/dev/null || true
+  JOB_PIDS=()
+  rm -f -- "$RUN_DIR/hc-events"
+  if [[ -z $snapshot ]] || over_byte_cap "$snapshot" "$TOTAL_BYTE_CAP" ||
+    ! printf '%s' "$snapshot" | jq -e '(.terminals | type) == "array"' >/dev/null 2>&1; then
+    die "could not read herdr-core"
+  fi
+  printf '%s' "$snapshot" > "$RUN_DIR/hc-snapshot.json"
+}
+
+app_window_status() {
+  local out rc=0
+  out=$(bounded 1 herdr-app ls 2> "$RUN_DIR/app-error" |
+    head -c "$((SESSION_FILE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
+  if (( rc == 0 )) && ! over_byte_cap "$out" "$SESSION_FILE_CAP" &&
+    printf '%s' "$out" | jq -e '(.spaces | type) == "array"' >/dev/null 2>&1; then
+    printf '%s' "$out" > "$RUN_DIR/app-ls.json"
+    printf 'true' > "$RUN_DIR/window-open.json"
+  elif grep -q 'Connection refused' "$RUN_DIR/app-error"; then
+    printf 'false' > "$RUN_DIR/window-open.json"
+  else
+    printf 'null' > "$RUN_DIR/window-open.json"
+  fi
+}
+
+app_attention() {
+  local file="$HOME/.config/herdr-app/view.json" out
+  if readable_file "$file"; then
+    out=$(head -c "$((SESSION_FILE_CAP + 1))" -- "$file" 2>/dev/null) || true
+    if ! over_byte_cap "$out" "$SESSION_FILE_CAP" &&
+      printf '%s' "$out" | jq -e '(.attention | type) == "object"' >/dev/null 2>&1; then
+      printf '%s' "$out" > "$RUN_DIR/attention.json"
+      return
+    fi
+  fi
+  printf '{"attention":{}}' > "$RUN_DIR/attention.json"
+}
+
+app_merge_jq=$(cat <<'JQ'
+  def machine: (.address | split("/") | if length > 1 then .[0] else "" end);
+  def parent_addr: if .parent == null then null
+    elif (.parent | contains("/")) then .parent
+    elif machine == "" then .parent else "\(machine)/\(.parent)" end;
+  def lineage($byaddr):
+    reduce range(16) as $hop ([.];
+      if .[-1].parentAddr == null or $byaddr[.[-1].parentAddr] == null
+      then . else . + [$byaddr[.[-1].parentAddr]] end);
+  ($appIn[0].spaces // [] | [ .[] as $s | $s.tabs[]?.terminals[]? |
+    {key: (if $s.machine == null then "" else "\($s.machine)/" end) + .terminal,
+     value: .status}] | from_entries) as $appStatus
+  | ($attentionIn[0].attention // {}) as $attention
+  | ($windowIn[0]) as $windowOpen
+  | [.terminals[] | . + {machine: machine, liveness: .state,
+      state: (.status.state // null), parentAddr: parent_addr}] as $all
+  | ($all | map({key: .address, value: .}) | from_entries) as $byaddr
+  | ($all | map(. + {spaceId:
+      ([lineage($byaddr)[] | .labels["herdr.space"] // empty][0] // "_background")})) as $withSpace
+  | [$withSpace[] | select(.liveness == "live" and .state != null)
+    | . as $agent
+    | ($all | [ .[] | select(.liveness == "live" and .address != $agent.address)
+        | . as $candidate
+        | ($candidate | lineage($byaddr)) as $chain
+        | ($chain | map(.address) | index($agent.address)) as $index
+        | select($index != null and
+                 ([$chain[0:$index][] | .die_with_parent] | all))
+        | {address, title}] | sort_by(.address)) as $cascade
+    | . + {cascade: $cascade, cascadeKey: ($cascade | map(.address) | join(","))}
+    | . + {displayStatus:
+      (if $windowOpen == true and $appStatus[.address] != null then $appStatus[.address]
+       elif .status.state == "done" and $attention[.address].word == "done" and
+            $attention[.address].seen == true then "idle"
+       else .status.state end)}] as $agents
+  | ($agents | group_by([.machine, .spaceId]) | map(
+      . as $group | ($group[0]) as $first
+      | ($group | sort_by(.address) | .[0:$agentCap] | map(
+          (.labels.where // "") as $where
+          | {title: (if (.title // "") != "" then .title
+              elif (.argv[0] // "") != "" then (.argv[0] | split("/") | last)
+              else "untitled agent" end),
+             status: .displayStatus, kind: .status.kind, pane: .address,
+             tab: (if ($where | contains(" / ")) then ($where | split(" / ") | last) else "" end),
+             seq: .status_ms, cascade, cascadeKey})) as $shown
+      | {kind:"app", name: (if $first.spaceId == "_background" then "background"
+          else (($first.labels.where // "") | if contains(" / ") then split(" / ")[:-1] | join(" / ") else "space" end) end),
+         host: $first.machine, spaceId: $first.spaceId, running:true, readable:true,
+         stale:false, agents: ($shown | length),
+         blocked: ([$shown[] | select(.status == "blocked")] | length),
+         done: ([$shown[] | select(.status == "done")] | length),
+         working: ([$shown[] | select(.status == "working")] | length),
+         hiddenAgents: (($group | length) - ($shown | length)),
+         agentList:$shown, projects:[], windowAddress:""}))
+  | if $remote then . else map(select(.host == "")) end as $sessions
+  | {ok:true, error:"", sessions:$sessions, windowOpen:$windowOpen,
+     machines: (if $remote then ($machinesIn[0].machines // []) else [] end)}
+JQ
+)
+
+cmd_app_list() {
+  local remote=false machines='{"machines":[]}' job out
+  [[ ${1-} == --remote ]] && remote=true
+  app_snapshot
+  printf '{"spaces":[]}' > "$RUN_DIR/app-ls.json"
+  app_window_status & job=$!
+  JOB_PIDS+=("$job")
+  app_attention
+  wait "$job" || true
+  JOB_PIDS=()
+  if [[ $remote == true ]]; then
+    out=$(bounded 2 hc machine ls --json 2>/dev/null |
+      head -c "$((SESSION_FILE_CAP + 1))"; exit "${PIPESTATUS[0]}") || true
+    if ! over_byte_cap "$out" "$SESSION_FILE_CAP" &&
+      printf '%s' "$out" | jq -e '(.machines | type) == "array"' >/dev/null 2>&1; then
+      machines=$out
+    fi
+  fi
+  printf '%s' "$machines" > "$RUN_DIR/machines.json"
+  out=$(jq -c --argjson remote "$remote" --argjson agentCap "$AGENT_COUNT_CAP" \
+    --slurpfile appIn "$RUN_DIR/app-ls.json" \
+    --slurpfile attentionIn "$RUN_DIR/attention.json" \
+    --slurpfile windowIn "$RUN_DIR/window-open.json" \
+    --slurpfile machinesIn "$RUN_DIR/machines.json" \
+    "$app_merge_jq" "$RUN_DIR/hc-snapshot.json" 2>/dev/null) || die "could not read herdr-core"
+  over_byte_cap "$out" "$TOTAL_BYTE_CAP" && die "could not read herdr-core"
+  printf '%s\n' "$out"
 }
 
 # ---------------------------------------------------------------- windows
@@ -1066,8 +1206,6 @@ remote_action() {
 
 # ------------------------------------------------------------------- main
 
-require_tools
-
 # `--host H` first, checked before anything is built from it.
 if [[ ${1-} == --host ]]; then
   valid_host "${2-}" || die "not a host name"
@@ -1076,13 +1214,23 @@ if [[ ${1-} == --host ]]; then
   [[ -n $SCRIPT ]] || die "cannot reach another host from a script read on stdin"
 fi
 
+require_tools "${1:-list}"
+
 case "${1:-list}" in
   list)
     shift || true
     if demo_on; then
       if [[ -n $HOST ]]; then printf '{"ok":true,"error":"","sessions":[]}\n'; else demo_list; fi
+    elif ! command -v herdr >/dev/null 2>&1; then
+      printf '{"ok":true,"error":"","sessions":[]}\n'
     elif [[ -n $HOST ]]; then cmd_list_remote
     else cmd_list "${1-}"; fi ;;
+  app-list)
+    shift
+    [[ -z $HOST ]] || die "app commands run locally"
+    if demo_on; then
+      printf '{"ok":true,"error":"","sessions":[{"kind":"app","name":"demo","host":"","spaceId":"demo","running":true,"readable":true,"stale":false,"agents":1,"blocked":0,"done":0,"working":1,"hiddenAgents":0,"agentList":[{"title":"Demo agent","status":"working","kind":null,"pane":"t1","tab":"","seq":0,"cascade":[],"cascadeKey":""}],"projects":[],"windowAddress":""}],"windowOpen":false,"machines":[]}\n'
+    else cmd_app_list "${1-}"; fi ;;
   # Every write is a no-op while the demo is on, so a click during a shoot
   # cannot reach a real session.
   open) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_open "${1-}"; fi ;;

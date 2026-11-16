@@ -114,6 +114,28 @@ cat > "$tmp/bin/ss" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "${FAKE_SS_LINES-}"
 FAKE
+cat > "$tmp/bin/hc" <<'FAKE'
+#!/bin/bash
+printf 'hc-pid %s %s\n' "$$" "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+  'events --json')
+    if [[ -n ${FAKE_HC_SNAPSHOT_BYTES-} ]]; then
+      head -c "$FAKE_HC_SNAPSHOT_BYTES" /dev/zero | tr '\0' x
+      printf '\n'
+    else printf '%s\n' "$FAKE_HC_SNAPSHOT"; fi
+    while :; do printf '{"heartbeat":true}\n'; sleep 0.2; done ;;
+  'machine ls') printf '%s\n' "$FAKE_HC_MACHINES" ;;
+  *) exit 1 ;;
+esac
+FAKE
+cat > "$tmp/bin/herdr-app" <<'FAKE'
+#!/bin/bash
+case ${FAKE_APP_LS_FAIL-} in
+  refused) echo 'Connection refused' >&2; exit 1 ;;
+  other) echo 'unexpected failure' >&2; exit 1 ;;
+esac
+printf '%s\n' "$FAKE_APP_LS"
+FAKE
 cat > "$tmp/bin/kill" <<'FAKE'
 #!/bin/bash
 signal=$1 pid=$2
@@ -152,7 +174,7 @@ FAKE
 # The launcher tries the desktop's terminal first (#18), so it is faked as
 # well: a test must never open a real window. Same knob as foot.
 cp "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
-chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/kill" \
+chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/hc" "$tmp/bin/herdr-app" "$tmp/bin/kill" \
   "$tmp/bin/setsid" "$tmp/bin/uwsm-app" "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
 
 failed=0
@@ -175,7 +197,12 @@ reset() {
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
     FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE \
     FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC \
-    FAKE_TERM_SLEEP
+    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON
+  mkdir -p "$HOME/.config/herdr-app"
+  rm -f -- "$HOME/.config/herdr-app/view.json"
+  export FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[]}'
+  export FAKE_HC_MACHINES='{"machines":[]}'
+  export FAKE_APP_LS='{"spaces":[]}'
   local var
   for var in ${!FAKE_SNAPSHOT_BODY_@} ${!FAKE_SNAPSHOT_SLEEP_@}; do unset "$var"; done
 }
@@ -784,5 +811,109 @@ check "58 run directory removed" test -z \
 surviving=$(awk '$1 == "snapshot-pid" { print $3 }' "$FAKE_LOG" |
   while read -r child; do kill -0 "$child" 2>/dev/null && printf '%s\n' "$child"; done)
 check "58 no snapshot child left" test -z "$surviving"
+
+# App rows come from hc's snapshot. Shells can carry a space label and be
+# killed with a parent, but do not become agents without a live status.
+reset
+FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[
+  {"address":"t1","state":"live","status":null,"parent":null,"die_with_parent":false,"labels":{"herdr.space":"sp1","where":"old / Tab"},"title":"shell","argv":[],"status_ms":0},
+  {"address":"t2","state":"live","status":{"state":"done","kind":null},"parent":"t1","die_with_parent":true,"labels":{"where":"renamed / Team / Work"},"title":"agent","argv":[],"status_ms":5},
+  {"address":"t3","state":"live","status":{"state":"blocked","kind":"question"},"parent":"t2","die_with_parent":true,"labels":{},"title":"child","argv":[],"status_ms":6},
+  {"address":"t4","state":"live","status":{"state":"working","kind":null},"parent":"t2","die_with_parent":false,"labels":{},"title":"other","argv":[],"status_ms":7},
+  {"address":"razer/t2","state":"live","status":{"state":"working","kind":null},"parent":"t1","die_with_parent":true,"labels":{"herdr.space":"sp1","where":"remote / Tab"},"title":"remote","argv":[],"status_ms":8},
+  {"address":"razer/t1","state":"finished","status":{"state":"done","kind":null},"parent":null,"die_with_parent":false,"labels":{},"title":"old","argv":[],"status_ms":9},
+  {"address":"t5","state":"live","status":{"state":"idle","kind":null},"parent":"missing","die_with_parent":true,"labels":{},"title":"orphan","argv":[],"status_ms":10}]}'
+FAKE_HC_SNAPSHOT=$(printf '%s' "$FAKE_HC_SNAPSHOT" | jq -c .)
+export FAKE_APP_LS='{"spaces":[{"id":"sp1","name":"new","machine":null,"tabs":[{"id":"tb1","name":"Work","terminals":[{"terminal":"t2","pane":"p1","status":"idle"}]}]}]}'
+export FAKE_HC_MACHINES='{"machines":[{"name":"razer","state":"connected"}]}'
+printf '{"attention":{"t2":{"word":"done","seen":true}}}' > "$HOME/.config/herdr-app/view.json"
+out=$("$script" app-list)
+check "59 app grouping and cascade" jq -e '
+  .ok and .windowOpen == true and .machines == [] and (.sessions | length) == 2 and
+  (.sessions | all(.host == "")) and
+  ([.sessions[].agentList[].pane] | sort) == ["t2","t3","t4","t5"] and
+  (.sessions[] | select(.spaceId == "sp1") | .name == "renamed / Team" and
+   .agentList[0].tab == "Work" and .agentList[0].status == "idle" and
+   .agentList[0].cascadeKey == "t3" and .agentList[0].cascade[0].title == "child") and
+  (.sessions[] | select(.spaceId == "_background") | .name == "background")' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+check "59 producer stopped" test -z "$(awk '$1 == "hc-pid" && $3 == "events" {print $2}' "$FAKE_LOG" |
+  while read -r child; do kill -0 "$child" 2>/dev/null && printf '%s\n' "$child"; done)"
+out=$("$script" app-list --remote)
+check "60 app remote and machines" jq -e '
+  .machines == [{"name":"razer","state":"connected"}] and
+  ([.sessions[].host] | index("razer")) != null and
+  ([.sessions[].agentList[].pane] | unique | length) == 5 and
+  (.sessions[] | select(.host == "razer") | .spaceId == "sp1")' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 seen done falls back to idle" jq -e '
+  .windowOpen == false and
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+FAKE_HC_SNAPSHOT=$(jq -c '.terminals += [
+  {address:"t6",state:"live",status:{state:"error",kind:null},parent:null,
+   die_with_parent:false,labels:{"herdr.space":"sp2","where":"renamed / Team / Work"},
+   title:"duplicate",argv:[],status_ms:11},
+  {address:"razer/t6",state:"live",status:{state:"idle",kind:null},parent:"t1",
+   die_with_parent:true,labels:{},title:"remote orphan",argv:[],status_ms:12},
+  {address:"t0",state:"live",status:null,parent:"t2",die_with_parent:true,
+   labels:{},title:"child shell",argv:[],status_ms:0},
+  {address:"t8",state:"live",status:{state:"working",kind:null},parent:"t0",
+   die_with_parent:true,labels:{},title:"great grandchild",argv:[],status_ms:13}]' \
+  <<<"$FAKE_HC_SNAPSHOT")
+out=$("$script" app-list --remote)
+check "60 duplicate names and deep cascade" jq -e '
+  ([.sessions[] | select(.host == "" and .name == "renamed / Team")] | length) == 2 and
+  ([.sessions[] | select(.host == "" and .spaceId == "sp2")][0].agentList[0].status == "error") and
+  ([.sessions[] | select(.host == "razer" and .spaceId == "_background")][0].agentList[0].pane == "razer/t6") and
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].cascadeKey == "t0,t3,t8")' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2") | .labels.where) = "new / Tab"' \
+  <<<"$FAKE_HC_SNAPSHOT")
+out=$("$script" app-list)
+check "60 rename preserves space identity" jq -e '
+  ([.sessions[] | select(.spaceId == "sp1")][0] |
+   .name == "new" and .agentList[0].pane == "t2")' <<<"$out"
+
+reset
+FAKE_HC_SNAPSHOT=$(jq -nc '
+  {seq:1, terminals:
+    ([range(500) | {address: ("t" + (tostring | ("000" + .)[-3:])),
+      state:"live", status:{state:"working",kind:null}, parent:null,
+      die_with_parent:false, labels:{"herdr.space":"sp","where":"many / Tab"},
+      title:"agent", argv:[], status_ms:1}]
+     + [{address:"tzz",state:"live",status:{state:"working",kind:null},
+         parent:"t000",die_with_parent:true,labels:{"herdr.space":"sp","where":"many / Tab"},
+         title:"tail",argv:[],status_ms:1}])}')
+out=$("$script" app-list)
+check "60 cap keeps hidden descendant in cascade" jq -e '
+  .sessions[0].agents == 500 and .sessions[0].working == 500 and
+  .sessions[0].hiddenAgents == 1 and
+  .sessions[0].agentList[0].cascadeKey == "tzz"' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+
+reset
+export FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[]}'
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "61 closed window" jq -e '.windowOpen == false' <<<"$out"
+out=$(FAKE_APP_LS_FAIL=other "$script" app-list)
+check "62 uncertain window" jq -e '.windowOpen == null' <<<"$out"
+out=$(FAKE_HC_SNAPSHOT='bad' "$script" app-list)
+check "63 malformed snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
+out=$(FAKE_HC_SNAPSHOT_BYTES=8388610 "$script" app-list)
+check "64 oversized snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
+
+mkdir -p "$tmp/only-jq"
+ln -s "$(command -v jq)" "$tmp/only-jq/jq"
+ln -s "$(command -v cat)" "$tmp/only-jq/cat"
+ln -s "$(command -v readlink)" "$tmp/only-jq/readlink"
+out=$(PATH="$tmp/only-jq" "$script" list)
+check "65 classic list without herdr" jq -e '.ok == true and .sessions == []' <<<"$out"
+out=$(PATH="$tmp/only-jq" "$script" app-list)
+check "66 app list without hc" jq -e '.error == "could not read herdr-core"' <<<"$out"
+"$script" demo on >/dev/null
+out=$("$script" app-list)
+check "67 app demo" jq -e '.sessions[0].kind == "app" and .sessions[0].agentList[0].pane == "t1"' <<<"$out"
+"$script" demo off >/dev/null
 
 exit "$failed"
