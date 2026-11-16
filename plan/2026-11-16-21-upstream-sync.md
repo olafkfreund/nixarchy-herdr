@@ -148,22 +148,45 @@ Closes #21 on branch `fix/21-upstream-sync`.
      started with. That holds for uwsm's default scope launch, not
      `UWSM_APP_UNIT_TYPE=service`.
 
-   Verify: `jq empty manifest.json`, then `omarchy plugin validate .`.
+   - Location: the spec names the "Opening a session" text. Since #20, the
+     launch behaviour is described in the "What it does" first bullet, so the
+     sentence goes there, next to the launcher check sentence.
+   - The badge paragraph (`README.md:137-141`) stays untouched.
 
-4. **Lead: history, then the full check.**
+   Verify:
 
    ```bash
-   git fetch upstream
-   git merge -s ours b00a6ca      # message: the U3 table
-   git merge-base --is-ancestor b00a6ca HEAD && echo ok
-   git log --reverse HEAD..upstream/master --no-merges --format=%h   # c22668d 8634049 83007e3
+   jq -e '.version == "1.0.2"' manifest.json
+   git diff master -- README.md   # one added sentence; the badge paragraph is unchanged
+   omarchy plugin validate .
    ```
+
+4. **Lead: commit, record the history, then the full check.**
+   - **Commit first.** After each of steps 1-3, the lead reviews the diff
+     against that step and commits it. Before the merge, `git status
+     --porcelain` must print nothing.
+   - **Record the history and check it:**
+
+     ```bash
+     git fetch upstream
+     git merge -s ours b00a6ca -m "<U3 table>"
+     git rev-parse HEAD^2 | grep -q "^$(git rev-parse b00a6ca)"   # second parent is b00a6ca
+     [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse HEAD^1^{tree})" ]   # no file changed
+     for c in 73b6605 b00a6ca 4513202 b4dceeb 43e61b5 d0df5ea 448fdd1 ff66115; do
+       git log -1 --format=%B | grep -q "$c" || echo "missing $c"; done   # all eight named
+     git log --reverse HEAD..upstream/master --no-merges --format=%h   # c22668d 8634049 83007e3
+     ```
 
    Then the Tests below, push, and a PR that links the intent, spec and plan.
 
 5. **Lead, after merge: live check.**
-   - Prerequisites: the nixarchy pin bump and the p620 deploy, with the
-     owner's OK, announced on the agent bus.
+   - **Prerequisites, done outside this repo:**
+     - the nixarchy flake's pin of this plugin is bumped;
+     - p620 is deployed, with the owner's OK, announced on the agent bus;
+     - the owner, or the lead with that OK, does both.
+     - Evidence before the check starts: the deployed store path under
+       `~/.config/omarchy/plugins/nixarchy.herdr` contains `manifest.json`
+       with version `1.0.2`.
    - **On p620** (Omarchy edge-20261116):
      - the badge is readable at normal size in four states: blocked, done,
        working, and a two-digit count;
@@ -193,6 +216,8 @@ omarchy plugin validate .
 - **codex:** the `Panel.qml` diff.
 - **agy:** this plan plus the diff of `bin/` and `tests/` only, kept narrow so
   it fits inside its print timeout.
+- **Context:** codex and agy may also open the changed files in full in the
+  repo, for surrounding code.
 
 ## Rollback
 
