@@ -67,6 +67,9 @@ Item {
   // `omarchy-shell shell summon nixarchy.herdr ...` and close() when hidden.
   function open(payloadJson) {
     root.targetScreen = root.focusedScreen()
+    // A prompt whose process never reported its exit must not lock the line
+    // for good; one that is still running keeps it locked.
+    if (!promptProc.running) root.awaitingExit = false
     root.opened = true
     herd.refresh()
     Qt.callLater(function() { card.forceActiveFocus() })
@@ -92,6 +95,7 @@ Item {
     remote: true
     onNewSessionRequested: root.beginInput("new")
     onPromptRequested: root.beginInput("prompt")
+    onActionFinished: function (action, ok) { root.actionDone(action, ok) }
   }
 
   // One input line under the card, used two ways: "new" takes a session name
@@ -105,8 +109,17 @@ Item {
   property var promptTarget: null
   property string promptReply: ""
   property bool promptConfirmOpen: false
+  // A `new` is running: the line is read-only until its result comes in.
+  property bool newPending: false
+  // From the moment a prompt starts until its process has exited. Esc stops
+  // waiting at once, but a new prompt waits for the old one to be gone.
+  property bool awaitingExit: false
 
   function beginInput(mode) {
+    if (root.awaitingExit) {
+      herd.actionError = "a prompt is still waiting; Esc stops waiting"
+      return
+    }
     if (mode === "prompt") {
       var session = herd.sessionAt(herd.cursor)
       var agent = herd.agentAt(herd.cursor)
@@ -124,6 +137,7 @@ Item {
 
   function cancelInput() {
     promptProc.running = false
+    root.newPending = false
     root.inputMode = ""
     root.promptTarget = null
     root.promptReply = ""
@@ -142,9 +156,21 @@ Item {
     var name = words.length > 0 ? words[0] : ""
     var dir = words.length > 1 ? words.slice(1).join(" ") : ""
     if (name === "") { root.cancelInput(); return }
-    herd.newSession(root.newHost, name, dir)
-    root.cancelInput()
-    root.close()
+    // False means it did not start and the model says why; the line stays.
+    if (herd.newSession(root.newHost, name, dir)) root.newPending = true
+  }
+
+  // Only the model's `new` result matters here: a kill or a poll finishing
+  // must not close the line or the menu.
+  function actionDone(action, ok) {
+    if (action !== "new" || !root.newPending) return
+    root.newPending = false
+    if (ok) {
+      root.cancelInput()
+      root.close()
+    } else {
+      Qt.callLater(function () { newField.forceActiveFocus() })
+    }
   }
 
   // The target's state as of the latest poll, not as of the key press: an
@@ -164,7 +190,7 @@ Item {
 
   function submitPrompt(confirmed) {
     var text = newField.text
-    if (!root.promptTarget || text.trim() === "" || promptProc.running) return
+    if (!root.promptTarget || text.trim() === "" || root.awaitingExit) return
     if (!confirmed && herd.agentBusy(root.targetStatus())) {
       root.promptConfirmOpen = true
       promptConfirm.selectedIndex = 0
@@ -184,8 +210,42 @@ Item {
     // the process starts.
     promptProc.stdinEnabled = true
     root.promptReply = "waiting for " + t.title + "\u2026"
-    newField.text = ""
+    promptProc.gotOut = false
+    promptProc.gotExit = false
+    root.awaitingExit = true
     promptProc.running = true
+  }
+
+  // Both of a run's signals (stdout and exit) come in either order; the
+  // second one completes it.
+  function storePrompt(which, value) {
+    if (which === "out") { promptProc.out = value; promptProc.gotOut = true }
+    else { promptProc.code = value; promptProc.gotExit = true }
+    if (!promptProc.gotOut || !promptProc.gotExit) return
+    promptProc.gotOut = false
+    promptProc.gotExit = false
+    root.awaitingExit = false
+    root.promptDone(promptProc.out, promptProc.code)
+  }
+
+  // The text is cleared only when it was sent. A run for a line that has been
+  // cancelled since has nowhere to show anything.
+  function promptDone(out, code) {
+    if (root.inputMode !== "prompt") return
+    var data = null
+    try { data = JSON.parse(out) } catch (e) { data = null }
+    if (!data) {
+      root.promptReply = "no reply"
+    } else if (data.ok === true && code === 0) {
+      var excerpt = root.replyFrom(data.output)
+      root.promptReply = data.status === "timeout"
+        ? "still working after 5 min" + (excerpt ? "\n" + excerpt : "")
+        : (excerpt || "(no output)")
+      newField.text = ""
+    } else {
+      root.promptReply = "could not send: "
+        + (data.error || (code !== 0 ? "exited with code " + code : "unknown error"))
+    }
   }
 
   function closeConfirm() {
@@ -236,18 +296,14 @@ Item {
       text = ""
       stdinEnabled = false
     }
+    property string out: ""
+    property int code: 0
+    property bool gotOut: false
+    property bool gotExit: false
     stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var data = JSON.parse(text)
-          root.promptReply = data.ok === true
-            ? (root.replyFrom(data.output) || "(no output)")
-            : "could not send: " + (data.error || "unknown error")
-        } catch (e) {
-          if (root.promptReply.indexOf("waiting") === 0) root.promptReply = "no reply"
-        }
-      }
+      onStreamFinished: root.storePrompt("out", text)
     }
+    onExited: function (exitCode) { root.storePrompt("exit", exitCode) }
   }
 
   PanelWindow {
@@ -368,7 +424,7 @@ Item {
                 font.pixelSize: Math.round(Style.font.body * root.textScale)
                 color: root.foreground
                 selectByMouse: true
-                readOnly: promptProc.running
+                readOnly: root.newPending || root.awaitingExit
                 Keys.onPressed: function (event) {
                   if (event.key === Qt.Key_Escape) { root.cancelInput(); event.accepted = true }
                   else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {

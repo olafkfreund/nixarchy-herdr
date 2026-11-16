@@ -426,3 +426,95 @@ console.log('PASS: an equal-seq tie blinks nobody');
   assert.equal(context.pollInterval(), 3000);
 }
 console.log('PASS: a done-only list polls every 20 s');
+
+// Menu.qml: its input line, with stubs for the model, the field and the process.
+{
+  const menu = fs.readFileSync(`${__dirname}/../Menu.qml`, 'utf8');
+  const m = { Qt: { callLater() {} }, JSON };
+  m.root = { inputMode: '', promptTarget: null, promptReply: '', promptConfirmOpen: false,
+             newPending: false, awaitingExit: false, newHost: '', opened: true };
+  m.newField = { text: '', forceActiveFocus() {} };
+  m.card = { forceActiveFocus() {} };
+  m.promptProc = { running: false };
+  m.herd = { actionError: '', script: 'herdr-sessions', started: [],
+    newSession(host, name) { this.started.push(name); return this.ok; }, ok: true,
+    agentBusy: () => false, targetStatus: () => 'idle', sessions: [],
+    sessionAt: () => ({ name: 's', host: '' }), agentAt: () => ({ pane: 'w1:p1', title: 't' }),
+    cleanTitle: (x) => x, hostAtCursor: () => '', cursor: 0 };
+  vm.createContext(m);
+  for (const name of ['beginInput', 'cancelInput', 'submitInput', 'submitNew', 'actionDone',
+                      'targetStatus', 'submitPrompt', 'storePrompt', 'promptDone', 'replyFrom', 'close']) {
+    const match = menu.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
+    assert.ok(match, `Missing Menu function: ${name}`);
+    vm.runInContext(match[0], m);
+    m.root[name] = m[name];
+  }
+  const reset = () => {
+    Object.assign(m.root, { inputMode: '', promptTarget: null, promptReply: '', promptConfirmOpen: false,
+      newPending: false, awaitingExit: false, opened: true });
+    Object.assign(m.promptProc, { running: false, gotOut: false, gotExit: false });
+    m.newField.text = ''; m.herd.actionError = ''; m.herd.ok = true; m.herd.started = [];
+  };
+
+  // new: stays open and keeps its text on failure, closes on success
+  reset();
+  m.beginInput('new'); m.newField.text = 'dup';
+  m.submitNew();
+  assert.equal(m.root.newPending, true);
+  m.actionDone('kill', true);
+  assert.equal(m.root.newPending, true, 'a kill completion changes nothing');
+  assert.equal(m.root.opened, true);
+  m.actionDone('new', false);
+  assert.equal(m.root.newPending, false);
+  assert.equal(m.newField.text, 'dup');
+  assert.equal(m.root.inputMode, 'new');
+  m.submitNew(); m.actionDone('new', true);
+  assert.equal(m.root.opened, false);
+  assert.equal(m.root.inputMode, '');
+  reset(); m.beginInput('new'); m.newField.text = 'x'; m.herd.ok = false;
+  m.submitNew();
+  assert.equal(m.root.newPending, false, 'a refused start leaves the line editable');
+  console.log('PASS: a failed new keeps its text, a successful one closes, a kill changes nothing');
+
+  // prompt: failure keeps the text, success clears it, timeout says so
+  reset();
+  m.beginInput('prompt'); m.newField.text = 'hello';
+  m.submitPrompt(false);
+  assert.equal(m.promptProc.running, true);
+  assert.equal(m.newField.text, 'hello', 'text is not cleared on submit');
+  m.storePrompt('exit', 0); m.storePrompt('out', '{"ok":false,"error":"nope"}');
+  assert.equal(m.newField.text, 'hello');
+  assert.equal(m.root.promptReply, 'could not send: nope');
+  assert.equal(m.root.awaitingExit, false);
+  m.promptProc.running = false;
+  m.submitPrompt(false);
+  m.storePrompt('out', '{"ok":true,"status":"timeout","output":"\\u276f hello\\nworking"}'); m.storePrompt('exit', 0);
+  assert.equal(m.newField.text, '');
+  assert.match(m.root.promptReply, /^still working after 5 min\nworking$/);
+  console.log('PASS: a failed prompt keeps its text; a timeout is said on its own line');
+
+  // cancel, then resubmit before the old run has exited
+  reset();
+  m.beginInput('prompt'); m.newField.text = 'again';
+  m.submitPrompt(false);
+  m.cancelInput();
+  m.beginInput('prompt');
+  assert.equal(m.root.inputMode, '', 'beginInput refuses while a run is open');
+  assert.match(m.herd.actionError, /still waiting/);
+  m.root.inputMode = 'prompt'; m.root.promptTarget = { host: '', session: 's', pane: 'w1:p1', title: 't' };
+  m.promptProc.running = false; m.promptProc.command = null;
+  m.submitPrompt(true);
+  assert.equal(m.promptProc.running, false, 'a resubmit before onExited is refused');
+  m.root.inputMode = '';
+  m.storePrompt('out', '{"ok":true}'); m.storePrompt('exit', 0);
+  assert.equal(m.root.awaitingExit, false);
+  assert.equal(m.root.promptReply, '', 'a result for a cancelled line shows nothing');
+  console.log('PASS: cancel then resubmit before onExited is refused');
+
+  reset();
+  m.root.promptConfirmOpen = true;
+  m.close();
+  assert.equal(m.root.promptConfirmOpen, false);
+  assert.equal(m.root.opened, false);
+  console.log('PASS: close() clears promptConfirmOpen');
+}
