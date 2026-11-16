@@ -28,6 +28,7 @@ chmod 700 "$tmp/run"
 export HOME="$tmp/home" XDG_RUNTIME_DIR="$tmp/run" XDG_CACHE_HOME="$tmp/home/.cache"
 export PATH="$tmp/bin:$PATH"
 export FAKE_LOG="$tmp/log" FAKE_CLIENTS="$tmp/clients"
+export FAKE_PROC_DIR="$tmp/proc" FAKE_KILL_LOG="$tmp/kill-log"
 # Anything herdr set in the calling shell is not the fake's business.
 for var in ${!HERDR_@}; do unset "$var"; done
 
@@ -89,6 +90,7 @@ FAKE
 cat > "$tmp/bin/ssh" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$@" >> "$FAKE_LOG"
+printf 'ssh-pid %s\n' "$$" >> "$FAKE_LOG"
 [[ -n ${FAKE_SSH_RUN-} ]] || exit 0
 sleep "${FAKE_SSH_SLEEP:-0}" >/dev/null 2>&1
 while [[ $# -gt 0 && $1 != -- ]]; do shift; done
@@ -104,7 +106,30 @@ cat > "$tmp/bin/hyprctl" <<'FAKE'
 if [ "$1" = clients ]; then
   sleep "${FAKE_CLIENTS_SLEEP:-0}"
   cat "$FAKE_CLIENTS"
+elif [ "$1" = dispatch ]; then
+  exit "${FAKE_DISPATCH_RC:-0}"
 else echo "[]"; fi
+FAKE
+cat > "$tmp/bin/ss" <<'FAKE'
+#!/bin/bash
+printf '%s\n' "${FAKE_SS_LINES-}"
+FAKE
+cat > "$tmp/bin/kill" <<'FAKE'
+#!/bin/bash
+signal=$1 pid=$2
+if [[ $signal == -0 ]]; then
+  [[ ! -f $FAKE_PROC_DIR/$pid/dead ]]
+  exit
+fi
+printf '%s %s\n' "$signal" "$pid" >> "$FAKE_KILL_LOG"
+if [[ $signal == -KILL || ${FAKE_TERM_STICKS-} != 1 ]]; then
+  : > "$FAKE_PROC_DIR/$pid/dead"
+elif [[ -n ${FAKE_CHANGE_START_ON_TERM-} ]]; then
+  printf '%s\n' "$FAKE_CHANGE_START_ON_TERM" > "$FAKE_PROC_DIR/$pid/stat"
+fi
+FAKE
+cat > "$tmp/disable-kill" <<'FAKE'
+enable -n kill
 FAKE
 cat > "$tmp/bin/setsid" <<'FAKE'
 #!/bin/bash
@@ -118,8 +143,9 @@ FAKE
 cat > "$tmp/bin/foot" <<'FAKE'
 #!/bin/bash
 printf 'foot-launched\n' >> "$FAKE_LOG"
+exit "${FAKE_FOOT_RC:-0}"
 FAKE
-chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" \
+chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/kill" \
   "$tmp/bin/setsid" "$tmp/bin/uwsm-app" "$tmp/bin/foot"
 
 failed=0
@@ -133,13 +159,15 @@ check() {
 # Each case starts with a clean log and the fake's defaults.
 reset() {
   : > "$FAKE_LOG"
+  : > "$FAKE_KILL_LOG"
   echo "[]" > "$FAKE_CLIENTS"
   export FAKE_SESSIONS='[{"name":"s1","default":false,"running":true,"session_dir":"/nonexistent"}]'
   unset FAKE_SNAPSHOT_BYTES FAKE_SNAPSHOT_SLEEP FAKE_PROMPT_RC FAKE_AGENT_STATUS \
     FAKE_AGENT_GET_BYTES FAKE_SCREEN FAKE_SSH_RUN FAKE_SSH_PIPE FAKE_PROMPT_SLEEP \
     FAKE_AGENTS FAKE_TABS FAKE_FOCUS_SLEEP FAKE_GET_SLEEP FAKE_READ_SLEEP \
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
-    FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE
+    FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE \
+    FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC
   local var
   for var in ${!FAKE_SNAPSHOT_BODY_@} ${!FAKE_SNAPSHOT_SLEEP_@}; do unset "$var"; done
 }
@@ -163,6 +191,22 @@ fake_client() {
 fake_windows() {
   jq -n --argjson pid "$1" --argjson n "$2" \
     '[range($n) | {pid: $pid, address: "0x\(. + 10)", workspace: {name: "1"}}]' > "$FAKE_CLIENTS"
+}
+
+fake_stat() {
+  local pid=$1 start=$2 comm=${3:-herdr} i
+  printf '%s (%s) S' "$pid" "$comm"
+  for ((i = 0; i < 18; i++)); do printf ' 0'; done
+  printf ' %s\n' "$start"
+}
+
+fake_server() {
+  local pid=$1 start=$2
+  mkdir -p "$FAKE_PROC_DIR/$pid"
+  rm -f -- "$FAKE_PROC_DIR/$pid/dead"
+  printf 'herdr\n' > "$FAKE_PROC_DIR/$pid/comm"
+  printf 'herdr\0server\0' > "$FAKE_PROC_DIR/$pid/cmdline"
+  fake_stat "$pid" "$start" > "$FAKE_PROC_DIR/$pid/stat"
 }
 
 # Case 1: a snapshot bigger than one exec argument may be (128 KB on Linux)
@@ -543,5 +587,135 @@ for ((i = 0; i < 30; i++)); do
   sleep 0.1
 done
 check "40 TERM leaves no snapshot child" test -z "$surviving"
+
+# Step 3: socket ownership and process identity are checked before signalling.
+reset
+export FAKE_SESSIONS='[{"name":"s1","running":true,"socket_path":"/path"}]'
+export FAKE_SS_LINES='u_str LISTEN 0 4096 /path 123 * 0 users:(("x",pid=100,fd=3),("herdr",pid=101,fd=4))'
+mkdir -p "$FAKE_PROC_DIR/100"
+printf 'x\n' > "$FAKE_PROC_DIR/100/comm"
+fake_server 101 100
+out=$(BASH_ENV="$tmp/disable-kill" HERDR_TEST_PROC="$FAKE_PROC_DIR" "$script" kill s1)
+check "41 two owners signal herdr" jq -e '.ok == true' <<<"$out" &&
+  check "41 only server signalled" test "$(cat "$FAKE_KILL_LOG")" = '-TERM 101' ||
+  printf '  got: %.200s, signals: %s\n' "$out" "$(cat "$FAKE_KILL_LOG")"
+
+reset
+export FAKE_SESSIONS='[{"name":"s1","running":true,"socket_path":"/path"}]'
+export FAKE_SS_LINES='u_str LISTEN 0 4096 /path-other 123 * 0 users:(("herdr",pid=101,fd=4))'
+fake_server 101 100
+out=$(BASH_ENV="$tmp/disable-kill" HERDR_TEST_PROC="$FAKE_PROC_DIR" "$script" kill s1)
+check "42 socket prefix is not a match" jq -e \
+  '.error == "no running server for that session"' <<<"$out" &&
+  check "42 prefix never signalled" test ! -s "$FAKE_KILL_LOG" ||
+  printf '  got: %.200s, signals: %s\n' "$out" "$(cat "$FAKE_KILL_LOG")"
+
+reset
+export FAKE_SESSIONS='[{"name":"s1","running":true,"socket_path":"/path"}]'
+export FAKE_SS_LINES='u_str LISTEN 0 4096 /path 123 * 0 users:(("herdr",pid=101,fd=4))'
+fake_server 101 100
+mv "$FAKE_PROC_DIR/101/stat" "$FAKE_PROC_DIR/101/stat-old"
+mkfifo "$FAKE_PROC_DIR/101/stat"
+(fake_stat 101 100 > "$FAKE_PROC_DIR/101/stat";
+ sleep 0.2;
+ fake_stat 101 200 > "$FAKE_PROC_DIR/101/stat") &
+writer=$!
+out=$(timeout 5 env BASH_ENV="$tmp/disable-kill" HERDR_TEST_PROC="$FAKE_PROC_DIR" "$script" kill s1)
+kill "$writer" 2>/dev/null || true
+wait "$writer" 2>/dev/null || true
+unlink "$FAKE_PROC_DIR/101/stat"
+mv "$FAKE_PROC_DIR/101/stat-old" "$FAKE_PROC_DIR/101/stat"
+check "43 PID changed before TERM" jq -e '.ok == true' <<<"$out" &&
+  check "43 changed PID not signalled" test ! -s "$FAKE_KILL_LOG" ||
+  printf '  got: %.200s, signals: %s\n' "$out" "$(cat "$FAKE_KILL_LOG")"
+
+reset
+export FAKE_SESSIONS='[{"name":"s1","running":true,"socket_path":"/path"}]'
+export FAKE_SS_LINES='u_str LISTEN 0 4096 /path 123 * 0 users:(("herdr",pid=101,fd=4))'
+fake_server 101 100
+export FAKE_TERM_STICKS=1
+FAKE_CHANGE_START_ON_TERM=$(fake_stat 101 200)
+export FAKE_CHANGE_START_ON_TERM
+out=$(BASH_ENV="$tmp/disable-kill" HERDR_TEST_PROC="$FAKE_PROC_DIR" "$script" kill s1)
+check "44 PID changed before KILL" jq -e '.ok == true' <<<"$out" &&
+  check "44 no KILL after PID change" test "$(cat "$FAKE_KILL_LOG")" = '-TERM 101' ||
+  printf '  got: %.200s, signals: %s\n' "$out" "$(cat "$FAKE_KILL_LOG")"
+
+reset
+export FAKE_SESSIONS='[{"name":"s1","running":true,"socket_path":"/path"}]'
+export FAKE_SS_LINES='u_str LISTEN 0 4096 /path 123 * 0 users:(("herdr",pid=101,fd=4))'
+fake_server 101 100
+fake_stat 101 100 'x) y' > "$FAKE_PROC_DIR/101/stat"
+out=$(BASH_ENV="$tmp/disable-kill" HERDR_TEST_PROC="$FAKE_PROC_DIR" "$script" kill s1)
+check "45 stat comm has close parenthesis" jq -e '.ok == true' <<<"$out" &&
+  check "45 odd comm server signalled" test "$(cat "$FAKE_KILL_LOG")" = '-TERM 101' ||
+  printf '  got: %.200s, signals: %s\n' "$out" "$(cat "$FAKE_KILL_LOG")"
+
+reset
+export FAKE_SESSIONS='[{"name":"s1","running":true,"socket_path":"/path"}]'
+export FAKE_SS_LINES='u_str LISTEN 0 4096 /path 123 * 0 users:(("herdr",pid=101,fd=4))'
+fake_server 101 100
+export FAKE_TERM_STICKS=1
+out=$(BASH_ENV="$tmp/disable-kill" HERDR_TEST_PROC="$FAKE_PROC_DIR" "$script" kill s1)
+check "45b wedged server needs KILL" jq -e '.ok == true' <<<"$out" &&
+  check "45b signals original server twice" test \
+    "$(cat "$FAKE_KILL_LOG")" = $'-TERM 101\n-KILL 101' ||
+  printf '  got: %.200s, signals: %s\n' "$out" "$(cat "$FAKE_KILL_LOG")"
+
+# Command-line verbs are not window clients; attach and named flags are.
+reset
+fake_client herdr agent prompt w1:p1 x
+fake_windows "${bg[-1]}" 1
+out=$("$script" list)
+stop_bg
+check "46 prompt is not a window" jq -e '.sessions[0].windowAddress == ""' <<<"$out"
+
+reset
+fake_client herdr session list
+fake_windows "${bg[-1]}" 1
+out=$("$script" list)
+stop_bg
+check "47 list is not a window" jq -e '.sessions[0].windowAddress == ""' <<<"$out"
+
+reset
+export FAKE_SESSIONS='[{"name":"foo","running":true}]'
+fake_client herdr --session=foo
+fake_windows "${bg[-1]}" 1
+out=$("$script" list)
+stop_bg
+check "48 named flag is a window" jq -e '.sessions[0].windowAddress == "0x10"' <<<"$out"
+
+reset
+export FAKE_SESSIONS='[{"name":"foo","running":true}]'
+fake_client herdr session attach foo
+fake_windows "${bg[-1]}" 1
+out=$("$script" list)
+stop_bg
+check "49 attach is a window" jq -e '.sessions[0].windowAddress == "0x10"' <<<"$out"
+
+reset
+out=$(FAKE_FOOT_RC=1 "$script" open s1)
+check "50 launcher failure" jq -e '.error == "the terminal exited at once"' <<<"$out"
+
+reset
+out=$(FAKE_DISPATCH_RC=1 "$script" open 4)
+check "51 dispatch failure" jq -e '.error == "could not focus the window"' <<<"$out"
+
+reset
+FAKE_SSH_RUN=1 FAKE_SSH_SLEEP=30 "$script" --host razer list >/dev/null 2>&1 &
+pid=$!
+ssh_pid=""
+for ((i = 0; i < 50; i++)); do
+  ssh_pid=$(awk '$1 == "ssh-pid" { print $2; exit }' "$FAKE_LOG")
+  [[ -n $ssh_pid ]] && break
+  sleep 0.05
+done
+kill -TERM "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+check "52 remote list run directory removed" test -z \
+  "$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print)"
+check "52 remote ssh child stopped" test -n "$ssh_pid" &&
+  check "52 remote ssh child gone" test ! -e "/proc/$ssh_pid" ||
+  printf '  ssh pid %s still exists\n' "${ssh_pid:-none}"
 
 exit "$failed"
