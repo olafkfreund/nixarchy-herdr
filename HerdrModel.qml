@@ -179,8 +179,9 @@ Item {
   }
 
   function refresh() {
-    if (!listProc.running) {
+    if (!listProc.running && !listProc.open) {
       listProc.command = [root.script, "list"]
+      listProc.open = true
       listProc.running = true
     }
     // Other machines are asked only while the menu is open. The settle timer
@@ -202,9 +203,22 @@ Item {
     if (which === "out") { proc.out = value; proc.gotOut = true }
     else { proc.code = value; proc.gotExit = true }
     if (!proc.gotOut || !proc.gotExit) return
+    finishRun(proc, proc.out, proc.code)
+  }
+
+  // Quickshell reports a command that could not start only by `running`
+  // going false, with neither stdout nor an exit: complete that run once, as
+  // a failure, or whatever waits on it waits for good.
+  function startFailed(proc) {
+    if (!proc.open) return
+    finishRun(proc, JSON.stringify({ ok: false, error: "could not start herdr-sessions" }), -1)
+  }
+
+  function finishRun(proc, out, code) {
+    proc.open = false
     proc.gotOut = false
     proc.gotExit = false
-    complete(proc.kind, proc.out, proc.code, proc)
+    complete(proc.kind, out, code, proc)
     // A poll asked for again while it was still exiting starts over now.
     if (proc.restartPending === true) {
       proc.restartPending = false
@@ -324,7 +338,7 @@ Item {
   // actionError, when it cannot start. Kill has its own process.
   function launch(action, host, name, extra, dismissOnSuccess) {
     var proc = action === "kill" ? killProc : actionProc
-    if (proc.running) {
+    if (proc.running || proc.open) {
       actionError = "busy: " + (action === "kill" ? "kill" : actionName) + " is still running"
       return false
     }
@@ -337,6 +351,7 @@ Item {
     if (extra !== undefined && extra !== "") command.push(extra)
     proc.gotOut = false
     proc.gotExit = false
+    proc.open = true
     proc.command = command
     proc.running = true
     return true
@@ -1023,10 +1038,12 @@ Item {
       property int code: 0
       property bool gotOut: false
       property bool gotExit: false
+      property bool open: false
       function start() {
         gen = root.pollGen
         gotOut = false
         gotExit = false
+        open = true
         command = [root.script, "--host", modelData, "list"]
         running = true
       }
@@ -1034,6 +1051,7 @@ Item {
         onStreamFinished: root.storeResult(hostProc, "out", text)
       }
       onExited: function (exitCode) { root.storeResult(hostProc, "exit", exitCode) }
+      onRunningChanged: if (!running) root.startFailed(hostProc)
     }
   }
 
@@ -1044,10 +1062,12 @@ Item {
     property int code: 0
     property bool gotOut: false
     property bool gotExit: false
+    property bool open: false
     stdout: StdioCollector {
       onStreamFinished: root.storeResult(listProc, "out", text)
     }
     onExited: function (exitCode) { root.storeResult(listProc, "exit", exitCode) }
+    onRunningChanged: if (!running) root.startFailed(listProc)
   }
 
   Process {
@@ -1057,10 +1077,12 @@ Item {
     property int code: 0
     property bool gotOut: false
     property bool gotExit: false
+    property bool open: false
     stdout: StdioCollector {
       onStreamFinished: root.storeResult(actionProc, "out", text)
     }
     onExited: function (exitCode) { root.storeResult(actionProc, "exit", exitCode) }
+    onRunningChanged: if (!running) root.startFailed(actionProc)
   }
 
   Process {
@@ -1070,10 +1092,12 @@ Item {
     property int code: 0
     property bool gotOut: false
     property bool gotExit: false
+    property bool open: false
     stdout: StdioCollector {
       onStreamFinished: root.storeResult(killProc, "out", text)
     }
     onExited: function (exitCode) { root.storeResult(killProc, "exit", exitCode) }
+    onRunningChanged: if (!running) root.startFailed(killProc)
   }
 
   Timer {

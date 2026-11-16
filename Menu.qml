@@ -120,6 +120,12 @@ Item {
       herd.actionError = "a prompt is still waiting; Esc stops waiting"
       return
     }
+    // The line holds the name of a session still being created; replacing it
+    // would lose the text a failure is meant to give back.
+    if (root.newPending) {
+      herd.actionError = "busy: new is still running"
+      return
+    }
     if (mode === "prompt") {
       var session = herd.sessionAt(herd.cursor)
       var agent = herd.agentAt(herd.cursor)
@@ -228,6 +234,15 @@ Item {
     root.promptDone(promptProc.out, promptProc.code)
   }
 
+  // Quickshell reports a command that could not start only by `running`
+  // going false; the exit and the output never come.
+  function promptStartFailed() {
+    if (!root.awaitingExit || promptProc.gotExit) return
+    promptProc.gotOut = false
+    root.awaitingExit = false
+    root.promptDone(JSON.stringify({ ok: false, error: "could not start herdr-sessions" }), -1)
+  }
+
   // The text is cleared only when it was sent. A run for a line that has been
   // cancelled since has nowhere to show anything.
   function promptDone(out, code) {
@@ -305,6 +320,7 @@ Item {
       onStreamFinished: root.storePrompt("out", text)
     }
     onExited: function (exitCode) { root.storePrompt("exit", exitCode) }
+    onRunningChanged: if (!running) root.promptStartFailed()
   }
 
   PanelWindow {

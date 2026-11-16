@@ -18,7 +18,7 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
                     'bestRow', 'attentionRank', 'agentAt', 'lastColumnFor', 'clampColumn',
                     'moveCursor', 'moveColumn', 'cycleColumn', 'cursorToAgent', 'cursorToSession',
                     'applyHosts', 'applyPayload', 'tooltipText', 'cleanTitle', 'pollInterval',
-                    'newSession', 'hostSummary', 'countLabel']) {
+                    'newSession', 'hostSummary', 'countLabel', 'startFailed', 'finishRun']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
   assert.ok(match, `Missing function: ${name}`);
   vm.runInContext(match[0], context);
@@ -230,6 +230,28 @@ for (const order of [['out', 'exit'], ['exit', 'out']]) {
   assert.equal(calls, 1, `complete must run once, order ${order}`);
 }
 console.log('PASS: complete runs once in either signal order');
+
+// Quickshell 0.3.2 reports a command that cannot start only by `running`
+// going false: no stdout, no exit. That run must still complete, once.
+{
+  fresh();
+  context.newSession('', 'b');
+  assert.equal(context.actionProc.open, true);
+  context.actionProc.running = false;            // the start failed
+  assert.equal(context.run('open', sess('a')), false, 'an open run is still busy');
+  context.startFailed(context.actionProc);
+  context.startFailed(context.actionProc);       // a second runningChanged is ignored
+  assert.deepEqual(context.finished, [['new', false]]);
+  assert.equal(context.actionError, 'could not start herdr-sessions');
+  assert.equal(context.actionProc.open, false);
+  assert.equal(context.run('open', sess('a')), true, 'the next action can start');
+  // A normal finish completes first, so the runningChanged after it does nothing.
+  context.storeResult(context.actionProc, 'out', '{"ok":true}');
+  context.storeResult(context.actionProc, 'exit', 0);
+  context.startFailed(context.actionProc);
+  assert.deepEqual(context.finished, [['new', false], ['open', true]]);
+}
+console.log('PASS: a run that fails to start completes once, as a failure');
 
 {
   fresh();
@@ -443,7 +465,8 @@ console.log('PASS: a done-only list polls every 20 s');
     cleanTitle: (x) => x, hostAtCursor: () => '', cursor: 0 };
   vm.createContext(m);
   for (const name of ['beginInput', 'cancelInput', 'submitInput', 'submitNew', 'actionDone',
-                      'targetStatus', 'submitPrompt', 'storePrompt', 'promptDone', 'replyFrom', 'close']) {
+                      'targetStatus', 'submitPrompt', 'storePrompt', 'promptDone', 'replyFrom', 'close',
+                      'promptStartFailed']) {
     const match = menu.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
     assert.ok(match, `Missing Menu function: ${name}`);
     vm.runInContext(match[0], m);
@@ -517,4 +540,25 @@ console.log('PASS: a done-only list polls every 20 s');
   assert.equal(m.root.promptConfirmOpen, false);
   assert.equal(m.root.opened, false);
   console.log('PASS: close() clears promptConfirmOpen');
+
+  // beginInput leaves a pending `new` alone, and a prompt that cannot start
+  // unlocks the line with its text kept.
+  reset();
+  m.beginInput('new'); m.newField.text = 'keepme';
+  m.submitNew();
+  m.beginInput('prompt');
+  assert.equal(m.root.inputMode, 'new');
+  assert.equal(m.newField.text, 'keepme');
+  assert.match(m.herd.actionError, /busy: new/);
+  reset();
+  m.root.inputMode = 'prompt'; m.root.promptTarget = { host: '', session: 's', pane: 'w1:p1', title: 't' };
+  m.newField.text = 'hello';
+  m.submitPrompt(true);
+  assert.equal(m.root.awaitingExit, true);
+  m.promptProc.running = false;                   // the start failed
+  m.promptStartFailed();
+  assert.equal(m.root.awaitingExit, false);
+  assert.equal(m.newField.text, 'hello');
+  assert.match(m.root.promptReply, /could not start/);
+  console.log('PASS: a pending new is not overwritten; a prompt that cannot start unlocks');
 }

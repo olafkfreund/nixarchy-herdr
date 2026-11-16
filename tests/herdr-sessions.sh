@@ -435,12 +435,14 @@ check "23 split UTF-8 screen" jq -e '.ok == true and (.output | endswith("\ufffd
 
 reset
 start=$SECONDS
-out=$(FAKE_SSH_RUN=1 HERDR_TEST_NEW_DEADLINE=3 "$script" --host razer new fresh /tmp)
+out=$(FAKE_SSH_RUN=1 HERDR_TEST_NEW_DEADLINE=9 "$script" --host razer new fresh /tmp)
 took=$((SECONDS - start))
-# shellcheck disable=SC2016 # $took is a jq variable
-check "24 remote new deadline" jq -e --argjson took "$took" \
-  '.error == "session started, but razer never reported it running" and $took < 12' <<<"$out" ||
-  printf '  took %ss, got: %.200s\n' "$took" "$out"
+# The existence check is one `session list`; the deadline loop must add more.
+polls=$(grep -c '^herdr session list --json$' "$FAKE_LOG" || true)
+# shellcheck disable=SC2016 # $took and $polls are jq variables
+check "24 remote new deadline" jq -e --argjson took "$took" --argjson polls "$polls" \
+  '.error == "session started, but razer never reported it running" and $took < 14 and $polls >= 2' <<<"$out" ||
+  printf '  took %ss, %s polls, got: %.200s\n' "$took" "$polls" "$out"
 
 reset
 out=$(FAKE_LIST_SLEEP=30 "$script" new fresh)
@@ -580,7 +582,8 @@ kill -TERM "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
 check "40 TERM removes run directory" test -z \
   "$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'nixarchy-herdr.*' -print)"
-for ((i = 0; i < 30; i++)); do
+# A short grace only: a survivor would otherwise end by its own 2 s limit.
+for ((i = 0; i < 3; i++)); do
   surviving=$(awk '$1 == "snapshot-pid" { print $3 }' "$FAKE_LOG" |
     while read -r child; do kill -0 "$child" 2>/dev/null && printf '%s\n' "$child"; done)
   [[ -n $surviving ]] || break

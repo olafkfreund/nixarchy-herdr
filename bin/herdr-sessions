@@ -83,10 +83,18 @@ run_dir_init() {               # idempotent; called by cmd_list and cmd_list_rem
   trap run_dir_cleanup EXIT
   trap 'exit 143' TERM INT HUP   # exit runs the EXIT trap once
 }
+# timeout puts itself in its own process group, so a job's children are found
+# through the process tree rather than signalled as a group.
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  kill -TERM "$1" 2>/dev/null || true
+}
 run_dir_cleanup() {
   local p
-  for p in "${JOB_PIDS[@]}"; do kill -TERM "$p" 2>/dev/null || true; done
-  for p in "${JOB_PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
+  # ${a[@]+...}: bash 4.3 treats an empty array as unset under set -u.
+  for p in ${JOB_PIDS[@]+"${JOB_PIDS[@]}"}; do kill_tree "$p"; done
+  for p in ${JOB_PIDS[@]+"${JOB_PIDS[@]}"}; do wait "$p" 2>/dev/null || true; done
   [[ -n $RUN_DIR ]] && rm -rf -- "$RUN_DIR"
 }
 
@@ -395,7 +403,7 @@ cmd_list() {
   local LC_ALL=C sessions_json start=$SECONDS
   run_dir_init || die "could not make a temporary directory"
   # Bounded in time as well as size: an empty answer is "could not reach".
-  sessions_json=$(timeout 4 herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
+  sessions_json=$(bounded 4 herdr session list --json 2>/dev/null | head -c "$((SESSIONS_BYTE_CAP + 1))") || true
   [[ -n $sessions_json ]] || die "could not reach herdr"
   over_byte_cap "$sessions_json" "$SESSIONS_BYTE_CAP" && die "session list too large to read safely"
 
@@ -488,7 +496,7 @@ cmd_list() {
   done < <(printf '%s' "$sessions_json" |
     jq -r '.sessions[]? | "\(.name)\t\(.default // false)\t\(.running // false)\t\(.session_dir // "")"')
   local job
-  for job in "${JOB_PIDS[@]}"; do wait "$job" || true; done
+  for job in ${JOB_PIDS[@]+"${JOB_PIDS[@]}"}; do wait "$job" || true; done
   JOB_PIDS=()
   saved="{$saved}"
   printf '%s' "$saved" | jq -e . >/dev/null 2>&1 || saved="{}"
@@ -733,6 +741,7 @@ cmd_focus() {
     bounded 4 "${focus_cmd[@]}" >/dev/null 2>&1 || rc=$?
   fi
   timed_out "$rc" && die "timed out: focus"
+  (( rc == 255 )) && [[ -n $HOST ]] && die "$HOST is unreachable"
   (( rc == 0 )) || die "herdr could not focus that pane"
 
   rc=0
@@ -1043,7 +1052,8 @@ cmd_delete() {
 # with this script on stdin and its (already validated) arguments quoted.
 remote_action() {
   local out rc=0
-  out=$(ssh_run "bash -s -- $(printf '%q ' "$@")" < "$SCRIPT" 2>/dev/null |
+  # 12 s: longer than the remote side's own 8 s limits, so its message wins.
+  out=$(ssh_run "bash -s -- $(printf '%q ' "$@")" 12 < "$SCRIPT" 2>/dev/null |
     head -c 4096; exit "${PIPESTATUS[0]}") || rc=$?
   timed_out "$rc" && die "timed out: $1 on $HOST"
   (( rc == 0 )) || die "$HOST is unreachable"
