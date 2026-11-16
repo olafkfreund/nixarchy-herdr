@@ -178,83 +178,86 @@ Panel {
     bar: root.bar
     opacity: herd.reachable ? 1 : 0.5
     slotSize: root.barSlot
-    opticalSize: root.barContentWidth
     tooltipText: herd.plain(herd.tooltipText())
 
-    iconComponent: Component {
-      Item {
-        // herdr's own mark (assets/herdr-logo.svg without its background),
-        // tinted like a symbolic tray icon.
-        Image {
-          id: serverIcon
+    // Not an iconComponent: the shell hands that to BarIconContent, which
+    // scales the whole content to one icon by its bounds, so the badge shrank
+    // with the glyph. Children of the button are drawn at their own size.
+    hasVisualContent: true
+    Item {
+      anchors.fill: parent
+      scale: button.pressScale
+      // herdr's own mark (assets/herdr-logo.svg without its background),
+      // tinted like a symbolic tray icon.
+      Image {
+        id: serverIcon
+        anchors.centerIn: parent
+        width: Style.bar.iconFont
+        height: Style.bar.iconFont
+        source: Qt.resolvedUrl("assets/herdr-mark.svg")
+        sourceSize.width: Math.round(width * Screen.devicePixelRatio)
+        sourceSize.height: Math.round(height * Screen.devicePixelRatio)
+        fillMode: Image.PreserveAspectFit
+        visible: false
+        layer.enabled: true
+      }
+
+      // barForeground, not the theme's foreground: on a transparent bar
+      // the shell picks the glyph colour off what is behind it, so the
+      // icon turns dark over a light wallpaper the way every other bar
+      // icon does. The theme foreground is only right where the panel
+      // paints its own background.
+      //
+      // Nothing here reacts to the panel being open: the bar draws that
+      // itself, as an accent line on the module's inner edge, for every
+      // widget that has a panel. Tinting the glyph as well says the same
+      // thing twice, in the one colour that means something else.
+      MultiEffect {
+        anchors.fill: serverIcon
+        source: serverIcon
+        colorization: 1.0
+        colorizationColor: root.barForeground
+      }
+
+      // The server count rides the glyph's bottom-right corner, clear of the herdr
+      // mark's head and horn, the way an
+      // unread count rides an app icon, and is sized off the icon font so a
+      // theme that resizes the bar takes it along. The ratios are what the
+      // default 13px icon can carry: a 12px disc around a 9px digit. Three
+      // quarters of the glyph leaves the digit on 6px, which is a coloured
+      // speck rather than a count - unreadable at two digits - and the badge
+      // exists to say how many as much as it says which colour.
+      Rectangle {
+        id: badge
+        anchors.horizontalCenter: serverIcon.horizontalCenter
+        anchors.horizontalCenterOffset: Math.round(Style.bar.iconFont * 0.42)
+        anchors.verticalCenter: serverIcon.verticalCenter
+        anchors.verticalCenterOffset: Math.round(Style.bar.iconFont * 0.40)
+        visible: herd.reachable && herd.runningCount > 0 && herd.badgeActive
+        height: Math.round(Style.bar.iconFont * 0.95)
+        width: Math.max(height, count.implicitWidth + Math.round(height * 0.45))
+        radius: height / 2
+        color: herd.badgeColor()
+        // A rim in the bar's own background separates the badge from the
+        // glyph it sits on, so the corner it covers still reads as a corner
+        // and not as two shapes fused together.
+        border.width: Math.round(Style.bar.iconFont * 0.06)
+        border.color: Commons.Color.bar.background
+
+        Text {
+          id: count
           anchors.centerIn: parent
-          width: Style.bar.iconFont
-          height: Style.bar.iconFont
-          source: Qt.resolvedUrl("assets/herdr-mark.svg")
-          sourceSize.width: Math.round(width * Screen.devicePixelRatio)
-          sourceSize.height: Math.round(height * Screen.devicePixelRatio)
-          fillMode: Image.PreserveAspectFit
-          visible: false
-          layer.enabled: true
-        }
-
-        // barForeground, not the theme's foreground: on a transparent bar
-        // the shell picks the glyph colour off what is behind it, so the
-        // icon turns dark over a light wallpaper the way every other bar
-        // icon does. The theme foreground is only right where the panel
-        // paints its own background.
-        //
-        // Nothing here reacts to the panel being open: the bar draws that
-        // itself, as an accent line on the module's inner edge, for every
-        // widget that has a panel. Tinting the glyph as well says the same
-        // thing twice, in the one colour that means something else.
-        MultiEffect {
-          anchors.fill: serverIcon
-          source: serverIcon
-          colorization: 1.0
-          colorizationColor: root.barForeground
-        }
-
-        // The server count rides the glyph's bottom-right corner, clear of the herdr
-        // mark's head and horn, the way an
-        // unread count rides an app icon, and is sized off the icon font so a
-        // theme that resizes the bar takes it along. The ratios are what the
-        // default 13px icon can carry: a 12px disc around a 9px digit. Three
-        // quarters of the glyph leaves the digit on 6px, which is a coloured
-        // speck rather than a count - unreadable at two digits - and the badge
-        // exists to say how many as much as it says which colour.
-        Rectangle {
-          id: badge
-          anchors.horizontalCenter: serverIcon.horizontalCenter
-          anchors.horizontalCenterOffset: Math.round(Style.bar.iconFont * 0.42)
-          anchors.verticalCenter: serverIcon.verticalCenter
-          anchors.verticalCenterOffset: Math.round(Style.bar.iconFont * 0.40)
-          visible: herd.reachable && herd.runningCount > 0 && herd.badgeActive
-          height: Math.round(Style.bar.iconFont * 0.95)
-          width: Math.max(height, count.implicitWidth + Math.round(height * 0.45))
-          radius: height / 2
-          color: herd.badgeColor()
-          // A rim in the bar's own background separates the badge from the
-          // glyph it sits on, so the corner it covers still reads as a corner
-          // and not as two shapes fused together.
-          border.width: Math.round(Style.bar.iconFont * 0.06)
-          border.color: Commons.Color.bar.background
-
-          Text {
-            id: count
-            anchors.centerIn: parent
-            // Centring the text item leaves the digit riding high: a line box
-            // reserves descender room a digit never uses. Nudge it back down
-            // onto the middle of the disc.
-            anchors.verticalCenterOffset: Math.round(font.pixelSize * 0.1)
-            text: herd.blockedCount > 0 ? herd.blockedCount : herd.runningCount
-            textFormat: Text.PlainText
-            font.family: root.fontFamily
-            font.pixelSize: Math.round((badge.height - 2 * badge.border.width) * 0.88)
-            font.bold: true
-            renderType: Text.NativeRendering
-            color: Commons.Color.background
-          }
+          // Centring the text item leaves the digit riding high: a line box
+          // reserves descender room a digit never uses. Nudge it back down
+          // onto the middle of the disc.
+          anchors.verticalCenterOffset: Math.round(font.pixelSize * 0.1)
+          text: herd.blockedCount > 0 ? herd.blockedCount : herd.runningCount
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Math.round((badge.height - 2 * badge.border.width) * 0.88)
+          font.bold: true
+          renderType: Text.NativeRendering
+          color: Commons.Color.background
         }
       }
     }
