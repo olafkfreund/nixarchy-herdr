@@ -3,222 +3,320 @@ status: draft
 issue: 22
 spec: spec/2026-11-16-22-herdr-core-app.md
 coders:
-  1: codex   # app-list: the fifo reader, cleanup, and the jq graph walk (cascades, parents across machines); tricky bash and jq
-  2: codex   # the app-* actions: mapping hc results, exit codes, the cascade hash, window by PID; same author as step 1
-  3: coder   # HerdrModel.qml: subscription, coalescing, watchdog, sources, keys, staleness
-  4: coder   # Menu.qml and Card.qml: captured targets, kind dispatch, the cascade confirm, labels
-  5: coder   # tests/app-subscription.qml: the QML wiring check
+  1: codex   # app-list: the fifo reader, the cleanup, and the jq graph walk (parents across machines, sub-agents that end with a kill); tricky bash and jq
+  2: codex   # app-* actions: mapping hc results and exit codes, the cascade check, the window by PID; same author as step 1
+  3: coder   # HerdrModel.qml: the subscription, coalescing, the watchdog, the sources, keys, staleness, the kill confirm logic
+  4: coder   # Menu.qml and Card.qml: captured targets, the i key, rendering, the error line
+  5: coder   # tests/app-subscription.qml: the QML wiring check (coalescing, watchdog, restart)
   6: coder   # README and manifest
 reviewers:
-  - codex  # reads the QML steps (3-5) it did not write
-  - agy    # reads the bash steps (1-2); give it this plan plus the bin/ diff only (it timed out on larger inputs)
+  - codex  # reads steps 3-5 (QML and their test diffs), which it did not write
+  - agy    # reads steps 1-2 (the bin/ diff plus the existing helper bodies it calls); narrow input, because it timed out on large ones
 ---
 
 # Plan: show herdr-core and herdr-app agents, one row per space
 
-Closes #22 on branch `feat/22-herdr-core-app`, which starts from master
-`9c8a8fa` (#20 and #21 merged) plus this task's artifacts. Functions are
-named, not numbered, because the line numbers move.
+Closes #22 on branch `feat/22-herdr-core-app`. It starts from master
+`9c8a8fa` (#20 and #21 merged) plus this task's artifacts. Functions are named
+rather than numbered, because line numbers move.
 
-## Approved decisions (summarised from the spec, so the plan stands alone)
+Revision 2 follows the reviews of revision 1:
 
-- **The data, as hc 0.1.21 gives it.**
-  - `hc events --json` starts with a snapshot, `{seq, terminals:[Terminal]}`,
-    then sends events, a `heartbeat` every 15 s, and `missed` plus a new
-    snapshot.
-  - `Terminal.status` is `{state, kind, …}` or null. Use `.status.state`
-    (idle, working, done, blocked, error). `.status.kind` (permission,
-    question, auth) is set only when blocked.
-  - `parent` is a bare id, or `machine/tN`. `die_with_parent` is a boolean.
-  - Labels:
-    - `where` is `"<space> / <tab>"`;
-    - `herdr.space` and `herdr.tab` are ids local to that machine.
-  - Remote terminals are addressed `machine/tN`.
-  - hc errors go to stderr as `{error:{kind,message,hint}}`, with exit codes
-    3 not_found, 7 needs_target, 9 blocked, 10 status_mismatch, 11 finished.
-  - The attention record is `.attention` in `~/.config/herdr-app/view.json`:
-    a map from address to `{word, seen}`.
-  - `herdr-app ls` answers only while the window is open. With no window it
-    fails with "connection refused".
-- **A1: the subscription, in `HerdrModel`.**
-  - **Reading:** `appSubProc` runs `hc events --json` into a `SplitParser`,
+- **Codex** (gpt-6.1-sol): seven findings, all taken.
+- **agy** (model not reported): eight findings, all taken.
+
+## CLI contracts
+
+These come from hc 0.1.21's `hc schema` and help, and from herdr-app 0.1.16's
+real output. Every fake must produce exactly these shapes, and no step may
+call the real tools.
+
+- **`hc events --json`** first prints one line, `{"seq":N,"terminals":[Terminal…]}`.
+  After that come event lines, `{"…":"heartbeat"…}` lines every 15 s, and on
+  overflow a `missed` line plus a new snapshot. The subscription treats any
+  line other than a heartbeat as a trigger, and never reads its fields.
+- **A `Terminal`** has these fields (paths are exact):
+  - `.address`: `"t3"`, or `"razer/t4"` on a connected machine;
+  - `.state`: `"live"` or `"finished"`;
+  - `.status`: `null`, or `{"state":"idle|working|done|blocked|error", "kind":
+    "permission|question|auth"|null, …}`;
+  - `.parent`: `null`, a bare `"t3"` (the same machine), or `"razer/t3"`;
+  - `.die_with_parent`: a boolean;
+  - `.labels`: `{"where":"<space> / <tab>", "herdr.space":"sp…",
+    "herdr.tab":"tb…", …}`, where the ids are local to the terminal's own
+    machine;
+  - `.title` (a string), `.argv` (an array), `.status_ms` (a number).
+- **`hc machine ls --json`** gives `{"machines":[{"name":"razer",
+  "state":"connected", …}]}`. The CLI's view adds `state`.
+- **`hc send --json --wait [--force] -- ADDR TEXT`** gives `{started, status,
+  turn, wait:{reason, ended, status, exit_code}}`.
+  - `wait.reason` is one of `status`, `exit`, `output`, `timeout` or
+    `not_started`.
+  - `hc` defaults to JSON when piped, but the plan always passes `--json`.
+- **`hc read --lines 60 ADDR`** always prints plain text.
+- **`hc interrupt --json ADDR`** gives `{key, outcome}`, with `outcome` one of
+  `stopped`, `exited`, `still_working` or `unknown`.
+- **`hc kill --json ADDR`** exits 0 on success. Its body is not needed.
+- **hc errors** go to stderr as `{"error":{"kind","message","hint"}}`, with
+  exit codes 3 not_found, 7 needs_target, 9 blocked, 10 status_mismatch,
+  11 finished.
+- **`herdr-app ls`** gives `{"spaces":[{"id","name","machine":null|"razer",
+  "tabs":[{"id","name","terminals":[{"terminal":"t3","pane":"p…",
+  "status":"done"|null,…}]}]}]}`.
+  - The address is `(machine ? machine + "/" : "") + terminal`.
+  - Without a window it exits non-zero, with stderr containing "Connection
+    refused".
+- **`herdr-app do CMD --k v`** prints JSON ids on success, or
+  `{"error":"…"}` on stdout with exit 1.
+- **`~/.config/herdr-app/view.json`** holds
+  `{"attention":{ADDR:{"word":"done"|"idle"|null,"seen":true|false}}, …}`.
+
+## Approved decisions (summarised from the spec)
+
+- **A1: subscription (`HerdrModel`).**
+  - **Reading.** `appSubProc` runs `hc events --json` into a `SplitParser`,
     attached before the process starts.
-  - **Coalescing:**
-    - the first non-heartbeat line starts a one-shot 250 ms timer, which later
-      lines never restart;
-    - the timer runs `app-list`;
-    - a line during a run sets `appDirty`, so exactly one more run follows.
-  - **Watchdog:** every line resets a 40 s timer. When it fires, the
-    subscription is killed and restarted with backoff (2, 4, … up to 60 s),
-    and the data is marked stale.
-  - **No hc:** failing to start sets `hcAvailable=false`, and nothing retries.
-  - **Clearing staleness:** a restart alone never clears it. Only a successful
-    `app-list` does.
+  - **Coalescing.**
+    - The first line that isn't a heartbeat starts a one-shot timer
+      (`appCoalesceMs`, default 250). Later lines never restart it.
+    - When it fires, `appListProc` runs `app-list`.
+    - A line arriving while it runs sets `appDirty`, and exactly one more run
+      follows.
+  - **Watchdog.** Every line resets a watchdog (`appWatchdogMs`, default
+    40000).
+  - **Restart.** The watchdog firing, or the process exiting after it
+    started, leads to:
+    - a kill, if it is still running;
+    - `appStale = true`;
+    - a restart after a backoff of 2, 4, 8 … up to 60 s. The backoff goes
+      back to 2 s after the next successful `app-list`.
+  - **No hc at all.** A failed start (#20's `startFailed` path) sets
+    `hcAvailable = false`, with no retry and no rows.
+  - **Staleness** is cleared only by a successful `app-list`.
   - **Malformed lines** are ignored, apart from resetting the watchdog.
+  - **Tunable timers.** `appCoalesceMs`, `appWatchdogMs` and `appBackoffMs`
+    are properties, so step 5's test can shorten them.
+  - **R4.** Each `HerdrModel` instance owns one subscription: about 4 idle
+    processes with 3 monitors. Sharing them is #23's.
 - **A2: `bin/herdr-sessions app-list [--remote]`.**
-  - **The snapshot reader:**
-    - runs `hc events --json` under `bounded 3`, in the background, into a fifo
-      in `RUN_DIR`, with its pid added to `JOB_PIDS`;
-    - takes the first line with `head -c CAP+1 | head -n 1`;
-    - then `kill_tree` and `wait` on the producer;
-    - and validates that the line is JSON with a `.terminals` array, else
-      `die "could not read herdr-core"`.
-  - **In parallel:**
-    - `bounded 1 herdr-app ls` sets `windowOpen`: true on success, false on
-      connection refused, null on anything else;
-    - `view.json` `.attention` is read, capped at `SESSION_FILE_CAP`; missing
-      means `{}`.
-  - **The jq merge,** in order:
-    1. Enrich every terminal: `machine`, `state=.status.state//null`, and
-       `parentAddr`. A bare parent on a remote terminal is prefixed with that
-       machine.
-    2. An agent is `.state=="live"` with `state!=null`.
-    3. The space is its own `herdr.space`; else the nearest ancestor's,
-       walking `parentAddr` at most 16 levels; else `"_background"`.
-    4. Row identity is `{kind:"app", machine, spaceId}`. The name and tab come
-       from splitting `where` on its last `" / "`, falling back to `"space"`
-       and `""`.
-    5. Status:
-       - with `windowOpen==true`, the app's status, if it isn't null;
-       - otherwise `state`, except that `done` with attention
-         `{word:"done",seen:true}` becomes `idle`;
-       - `error` stays `error`.
-    6. Each agent's `cascade` comes from the full list, before any cap: every
-       live terminal reachable through `parentAddr` edges where
-       `die_with_parent` is true, transitively, as `{address,title}`.
-    7. Rows come from `group_by([.machine,.spaceId])`, each one:
+  - **Snapshot reader.**
+    - `run_dir_init`, then `mkfifo "$RUN_DIR/hc-events"`.
+    - `bounded 3 hc events --json 2>/dev/null > fifo &`, with its pid added
+      to `JOB_PIDS`.
+    - `head -c "$((TOTAL_BYTE_CAP + 1))" < fifo | head -n 1` reads the first
+      line.
+    - Then `kill_tree` the producer, `wait` for it, and remove the fifo.
+    - The line must parse as JSON with a `.terminals` array, and must not be
+      over the cap. Otherwise `die "could not read herdr-core"`.
+  - **In parallel, both optional:**
+    - `bounded 1 herdr-app ls`. Success gives `windowOpen: true`, and the
+      app's statuses mapped by address as in the contract. An error
+      containing "Connection refused" gives `false`. Anything else gives
+      `null`.
+    - `view.json` `.attention`, capped at `SESSION_FILE_CAP`. Missing or
+      unreadable gives `{}`.
+  - **One jq merge,** with every input on stdin or `--slurpfile`/`--rawfile`:
+    1. **Enrich every terminal.**
+       - `machine`: what precedes `/` in `.address`, or `""`.
+       - `state`: `.status.state // null`.
+       - `parentAddr`: `null`; `.parent` if it contains `/`; else a bare
+         parent is prefixed with this terminal's machine (`machine/parent`).
+    2. **Agent** means `.state == "live"` and `state != null`.
+    3. **`spaceId`**: `.labels["herdr.space"]`; else the nearest ancestor's,
+       walking `parentAddr` at most 16 hops (that also guards against
+       cycles); else `"_background"`.
+    4. **Names.**
+       - The row name is the part of `.labels.where` before the last
+         `" / "`, and the tab is the part after it.
+       - With no `where`, the name is `"space"` and the tab `""`.
+       - The background row is always named `"background"`.
+    5. **Status.**
+       - If `windowOpen == true`, use the app's status for the address when
+         it isn't null.
+       - Otherwise use `state`. But `done` with attention
+         `{word:"done", seen:true}` becomes `idle`, and `error` stays
+         `error`.
+       - **R1, accepted limit:** a second finish while the window is closed
+         may still read as seen, because the attention record has no turn.
+    6. **`cascade`**, built from the full terminal list before any cap:
+       - every live terminal reachable through `parentAddr` edges with
+         `die_with_parent == true`, transitively;
+       - each entry is `{address, title}`, sorted by address;
+       - `cascadeKey` is those addresses joined with `","` (`""` when there
+         are none).
+    7. **Grouping** with `group_by([.machine, .spaceId])`. Each row is:
 
        ```text
-       {kind:"app", name, host:machine, spaceId, running:true, readable:true,
-        stale:false, agents, blocked, done, working, hiddenAgents,
+       {kind:"app", name, host:machine, spaceId, running:true,
+        readable:true, stale:false, agents, blocked, done, working,
+        hiddenAgents,
         agentList:[{title, status, kind:.status.kind, pane:address, tab,
-                    seq:status_ms, cascade}], projects:[], windowAddress:""}
+                    seq:status_ms, cascade, cascadeKey}],
+        projects:[], windowAddress:""}
        ```
 
-       The title falls back to `argv[0]`'s basename, then "untitled agent".
-       #20's D9 500-agent cap applies, and counts are taken after the cap.
-    8. Without `--remote`, only `machine==""` is kept.
-  - **Output:** `{ok, error, sessions, windowOpen, machines:[{name,state}]}`.
-    `machines` comes from `bounded 2 hc machine ls --json`, and only with
-    `--remote`.
-  - **Tool checks:** `require_tools` checks `jq` always, `herdr` only for the
-    classic commands, and `hc` only for `app-*`. On a machine without herdr,
-    `list` gives `{ok:true,sessions:[]}`.
-- **A3: the actions.**
-  - **Shared rules:**
+       - The row field is `host`, as on classic rows; QML never reads
+         `machine`.
+       - The title is `.title`, else `argv[0]`'s basename, else
+         `"untitled agent"`.
+       - #20's D9 applies: a cap of 500, with counts taken after it.
+    8. **`--remote`.** Without it, keep only `machine == ""`.
+  - **Output:** `{ok, error, sessions, windowOpen, machines}`.
+    - `machines` is the `machines` from `bounded 2 hc machine ls --json`,
+      with `--remote` only. Otherwise it is `[]`.
+  - **Tool checks.** `require_tools` checks `jq` always, `herdr` only for the
+    classic commands, and `hc` only for `app-*`. A missing `herdr` makes
+    `list` return `{ok:true, error:"", sessions:[]}`.
+- **A3: actions.**
+  - **Shared rules.**
     - `valid_hc_address` is
-      `^([A-Za-z0-9][A-Za-z0-9._-]{0,31}/)?t[0-9a-z]{1,9}$`;
-    - there is no `--host` or ssh, because hc routes `machine/tN` itself;
-    - hc's stderr JSON message is passed on, exit 124 or 137 gives
-      `timed out: <action>`, and herdr-app's stdout `{"error":…}` with exit 1
-      is decoded.
+      `^([A-Za-z0-9][A-Za-z0-9._-]{0,31}/)?t[0-9a-z]{1,9}$`.
+    - No `--host`, no ssh.
+    - hc's stderr JSON `.error.message` is passed through. Exit 124 or 137
+      gives `timed out: <action>`. herdr-app's `{"error"}` is decoded.
 
   | Subcommand | Does | Limit |
   |---|---|---|
-  | `app-focus ADDR` | `herdr-app do agent.focus --terminal ADDR`; if the window is closed, start it (A4) and retry until 5 s; then raise it | 6 s |
-  | `app-prompt ADDR [--force]` (text on stdin) | `hc send --wait [--force] -- ADDR "$text"`, then `hc read --lines 60 ADDR` | 300 s |
-  | `app-interrupt ADDR` | `hc interrupt ADDR` | 12 s |
-  | `app-kill ADDR HASH` | recompute the cascade and its hash (`sha256` of the sorted addresses); if it differs, `{ok:false, changed:true, cascade}`; otherwise `hc kill ADDR` | 8 s |
-  | `app-new NAME [DIR] [MACHINE]` | `herdr-app do space.new --name NAME [--folder DIR] [--machine MACHINE]`, starting the window first if needed | 8 s |
+  | `app-focus ADDR` | `herdr-app do agent.focus --terminal ADDR`; if the window is closed, start it (A4) and retry until 5 s; then raise it (A4) | 6 s |
+  | `app-prompt ADDR [--force]`, text on stdin | `hc send --json --wait [--force] -- ADDR "$text"`, then `hc read --lines 60 ADDR` | 300 s |
+  | `app-interrupt ADDR` | `hc interrupt --json ADDR` | 12 s |
+  | `app-kill ADDR CASCADE_KEY` | recompute ADDR's `cascadeKey` from a fresh snapshot (step 1's code); if it differs, `{ok:false, changed:true, cascade, cascadeKey}`; otherwise `hc kill --json ADDR` | 8 s |
+  | `app-new NAME DIR MACHINE`, always three arguments, `""` allowed | `herdr-app do space.new --name NAME [--folder DIR] [--machine MACHINE]`, starting the window first if needed | 8 s |
 
-  - **Prompt results** map `.wait.reason`:
-    - `ended` → `{ok:true,status:.wait.status,output}`;
-    - `timeout` → `{ok:true,status:"timeout",output}`;
-    - `not_started` → `{ok:false,error:"the agent did not start the turn"}`.
-  - **Interrupt results** map `outcome`: `stopped` → ok, `still_working` →
-    `{ok:true,note:"still working"}`.
-  - **Demo mode:** every `app-*` write does nothing, and `app-list` returns one
+  - **Arguments are validated.**
+    - `CASCADE_KEY` is `""` or comma-separated `valid_hc_address` values, at
+      most 4096 bytes.
+    - `NAME` passes `valid_session_name`. `DIR` is `""` or an absolute path.
+      `MACHINE` is `""` or passes `valid_host`.
+  - **Prompt result**, from `.wait.reason`:
+    - `status` or `exit`: `{ok:true, status:(.wait.status // "idle"),
+      output: <read>}`.
+    - `timeout`: `{ok:true, status:"timeout", output: <read>}`.
+    - `output`: `{ok:true, status:"output", output: <read>}`.
+    - `not_started`: `{ok:false, error:"the agent did not start the turn"}`.
+  - **Interrupt result**, from `.outcome`:
+    - `stopped` or `exited`: `{ok:true}`.
+    - `still_working`: `{ok:true, note:"still working"}`.
+    - `unknown`: `{ok:true, note:"it doesn't report status"}`.
+  - **Demo mode:** every `app-*` write is a no-op, and `app-list` returns one
     fixed demo app row.
 - **A4: the window.**
-  - Intersect `pgrep -x herdr-app` with the PIDs in `hyprctl clients -j`.
-  - Exactly one match: focus it with #20's checked `hl.dsp.focus`. None: start
-    the window. Several: `die "more than one herdr-app window"`.
-  - Start it with `setsid uwsm-app -- herdr-app`, under the caller's umask
-    (#21), with output to `/dev/null`. Then wait until `herdr-app ls`
-    answers.
-- **A5: the model and the UI.**
-  - **Sources:** `appSessions` and `appHostSessions` (menu only).
-    `rebuild()` orders them classic local, app local, classic remote, app
-    remote.
-  - **Keys:** for an app row,
-    `sessionKey = "app\u0000"+machine+"\u0000"+spaceId`; other rows are
-    unchanged. `agentKey` uses the hc address.
-  - **Captured targets:** `a` captures `{kind, host, session, pane}`, and `n`
-    captures `{kind, machine}`. Submission uses only what was captured.
-  - **Dispatch by kind:**
-    - Enter or a click → `app-focus`, `a` → `app-prompt`, `i` →
-      `app-interrupt`;
-    - `K` → confirm, "End <title>?" plus "and with it: …" → `app-kill`. A
-      `changed` reply asks again.
-    - `n` on an app row → `app-new`.
-  - **No destroy column on app rows.**
-  - **Labels:**
-    - the subtitle is "desktop app" (plus the machine for remote rows), or
-      "not live" while stale;
-    - the background row is named "background";
-    - `error` shows as "error" in the urgent colour;
-    - blocked agents with a `.status.kind` show "needs you: <kind>".
+  - **Finding it.** Intersect the PIDs from `pgrep -x herdr-app` with the PIDs
+    in `hyprctl clients -j`.
+    - Exactly one match: focus it with #20's checked `hl.dsp.focus`.
+    - None: start the window.
+    - More than one: `die "more than one herdr-app window"`.
+  - **Starting it.**
+    - `setsid uwsm-app -- herdr-app` if `uwsm-app` exists, else
+      `setsid herdr-app`.
+    - It runs under the caller's umask (#21), with
+      `</dev/null >/dev/null 2>&1 &` and `disown`.
+    - It is **not** added to `JOB_PIDS`, so the script's cleanup never kills
+      the window it opened.
+    - Then wait until `herdr-app ls` answers.
+- **A5: model and UI.**
+  - **Sources.** `appSessions` and `appHostSessions`.
+    - The menu's `HerdrModel` (`remote: true`) runs `app-list --remote` and
+      splits rows by `host === ""` (local) or not (remote).
+    - The bar's instance runs `app-list` only, and never gets remote rows.
+    - `rebuild()` merges: classic local, app local, classic remote, app
+      remote.
+  - **Keys.** For an app row, `sessionKey = "app\u0000" + host + "\u0000" +
+    spaceId`. Other rows are unchanged. `agentKey` uses the hc address.
+  - **Validators.** App agents use `validHcAddress` (the same regex as the
+    script) instead of `validPane`. App space names are display only, never
+    passed to `validName`.
+  - **Captured targets.**
+    - `a` captures `{kind, host, session, pane}`.
+    - `n` captures `{kind, host}`.
+    - `Menu.targetStatus` reads the captured target, not the cursor.
+  - **Dispatch by kind.**
+    - Enter or a click on an app agent: `app-focus`.
+    - Enter on an app row header: `app-focus` of its first agent.
+    - `a`: `app-prompt`, with `--force` only after Menu's busy or blocked
+      confirmation.
+    - `i`: `app-interrupt`. A `note` in the result is shown in the error
+      line.
+    - `K`: confirm, then `app-kill` with `cascadeKey`. On a `changed` reply
+      the confirmation reopens with the new cascade.
+    - `n` on an app row: `app-new` with that row's host.
+    - There is no destroy column on app rows.
+  - **Labels.**
+    - Subtitle: "desktop app", plus the host for remote rows, or "not live".
+    - `agentNote(status, kind)`, where `kind` is optional: `error` shows as
+      "error" in the urgent colour, and a blocked agent with a kind shows
+      "needs you: <kind>".
 - **A6: staleness.**
-  - Data is stale when the subscription is down or the last `app-list`
-    failed. Stale rows read "not live", and kill and interrupt are refused.
-  - A machine whose state isn't `connected` is marked "not live", with actions
-    refused there.
-  - The tooltip says "herdr-core not reachable" while stale.
-  - `appError` shows in the error line after `actionError` and `errorText`.
+  - **A row is "not live"** when `appStale` is set (the subscription is down,
+    or the last `app-list` failed), or when its host's machine state isn't
+    `"connected"`.
+  - **Refused on a "not live" row:** every app action (focus, prompt,
+    interrupt, kill and new space), with the message "<host or desktop app>
+    is not live".
+  - **The tooltip** says "herdr-core not reachable" while `appStale` is set.
+  - **The error line** shows, in this order: `actionError`, `errorText`,
+    `appError`, then the hidden-sessions note.
 
 ## Repo traps (apply to every step)
 
 - **The script is piped to remote hosts as `bash -s`.** It stays one
-  self-contained file. App commands run only locally, since hc does the
-  remoting.
-- **CI runs shellcheck,** so new code must pass it.
-- **jq inputs go on stdin or through `--slurpfile` or `--rawfile`,** never as
-  `--arg` with large data.
-- **#20's process discipline:**
-  - every external call goes through `bounded`, except the long-lived
-    subscription;
-  - every background child is added to `JOB_PIDS`;
-  - `kill_tree` runs on exit.
-- **Tests use fakes only.** No test touches the real hc, herdr-app,
-  Hyprland, ssh or a terminal. The `hc events` fake must keep streaming until
-  it is killed.
-- **Fakes use schema-shaped objects:** `status:{state,kind}`, never a bare
-  string.
+  self-contained file. App commands run locally only; hc does the remoting.
+- **CI runs shellcheck.** New code passes it.
+- **jq inputs** go on stdin or through `--slurpfile` or `--rawfile`, never as
+  a large `--arg`.
+- **#20's process discipline holds:** `bounded` for every call, `JOB_PIDS`
+  for background children, and `kill_tree` on exit. Two exceptions:
+  - the long-lived subscription, in QML;
+  - the herdr-app window that A4 starts.
+- **Tests use fakes only.** Shapes follow the CLI contracts above, with
+  `status` as an object. The `hc events` fake keeps streaming until it is
+  killed.
 - **`tests/session-actions.cjs` extracts top-level functions with a regex.**
-  New logic goes in top-level functions, indented two spaces, with the
-  closing brace on its own line.
-- **Every QML `Text` keeps `textFormat: Text.PlainText`.**
-- **Omarchy's key handler takes lowercase `k` and `x`.** `i` reaches the panel
-  (`PanelKeyCatcher.qml:119`).
-- **Implementers never stage, commit, push or switch branches.** The lead
-  commits after each step.
+  New logic goes in top-level functions indented two spaces, with the closing
+  brace on its own line.
+- **QML `Text`** uses `textFormat: Text.PlainText`.
+- **Keys.** Omarchy's key handler takes `k` and `x`; `i` reaches the panel.
+- **Commits.** Implementers never stage, commit, push or switch branches. The
+  lead commits after each step.
 
 ## Steps
 
-1. **`bin/herdr-sessions`: the tool checks and `app-list` (A2).**
-   - `require_tools` takes a list of tools, chosen per command in the dispatch
-     `case`. `list` on a machine without herdr returns an empty, ok list.
-   - Add `valid_hc_address`, `app_snapshot` (the fifo reader and cleanup),
-     `app_window_status`, `app_attention` and `cmd_app_list`. Add the
-     dispatch entry `app-list`, which also honours demo mode.
-   - **Fakes in `tests/herdr-sessions.sh`:**
-     - `hc` (`events` streams `FAKE_HC_SNAPSHOT` and then heartbeats;
-       `machine ls` prints `FAKE_HC_MACHINES`);
-     - `herdr-app` (`ls`: `FAKE_APP_LS`, or exit `FAKE_APP_LS_FAIL=refused`
-       or `=other`);
-     - `HOME`'s `.config/herdr-app/view.json` from `FAKE_VIEW_JSON`.
-   - **The spec's `app-list` cases:**
-     - agents only;
-     - grouping (duplicate names, the same id on two machines, a rename,
-       `where` split on its last `" / "`);
-     - parents (through a non-agent, a grandchild, a missing parent, a local
-       bare parent never matching a remote child);
-     - the status rules and `windowOpen` true, false or null;
-     - the cascade (grandchildren and shells in, `die_with_parent:false`
-       out);
-     - an oversized or malformed snapshot, and no orphaned producer;
-     - remote filtering, with no address listed twice;
-     - hc-only machines and demo mode.
+1. **`bin/herdr-sessions`: tool checks, `app-list` and the cascade (A2).**
+   - **Script changes.**
+     - `require_tools` checks per command (see A2), and `list` copes with no
+       `herdr`.
+     - Add `valid_hc_address`, `app_snapshot` (the fifo reader and its
+       cleanup), `app_window_status`, `app_attention`, and `app_merge_jq`
+       (the jq program as a shell variable, so step 2 reuses it for the
+       cascade).
+     - Add `cmd_app_list`, and the `app-list` dispatch entry with demo mode.
+   - **Fakes.**
+     - `hc`: `events` prints `FAKE_HC_SNAPSHOT`, then a heartbeat line every
+       0.2 s until killed. `machine ls` prints `FAKE_HC_MACHINES`.
+     - `herdr-app`: `ls` prints `FAKE_APP_LS`, or fails with "Connection
+       refused" (`FAKE_APP_LS_FAIL=refused`) or with another error (`=other`).
+     - `$HOME/.config/herdr-app/view.json` comes from `FAKE_VIEW_JSON`.
+   - **Cases.**
+     - Agents: only live terminals with a status.
+     - Grouping:
+       - duplicate names stay apart;
+       - the same space id on two machines stays apart;
+       - a rename keeps the row;
+       - `where` with two `" / "` splits on the last;
+       - the background row is named "background".
+     - Parents: through a non-agent, a grandchild, a missing parent, and a
+       bare parent that never crosses machines.
+     - Status rules, and `windowOpen` true, false and null.
+     - Cascade:
+       - grandchildren and shells are in, `die_with_parent: false` is out;
+       - `cascadeKey` is sorted;
+       - a descendant beyond the 500-agent cap is still in the cascade.
+     - Counts with 501 agents equal the shown 500, and `hiddenAgents` is 1.
+     - Snapshots: an oversized or malformed one gives the error, and no
+       producer is left after `app-list`.
+     - Remote: filtered without `--remote`, no address twice, and `machines`
+       present only with `--remote`.
+     - hc-only machine; no hc gives `could not read herdr-core`; demo mode.
 
    Verify:
 
@@ -228,172 +326,207 @@ named, not numbered, because the line numbers move.
    bash tests/herdr-sessions.sh
    ```
 
-   Traps:
-   - Use a fifo, not `read < <(…)` (it hides the producer's status) and not a
-     bare `head` (it panics hc on a broken pipe that nothing cleans up).
-   - The 16-level depth limit guards against parent cycles.
-
 2. **`bin/herdr-sessions`: the `app-*` actions and the window (A3, A4).**
-   - Add `cmd_app_focus`, `cmd_app_prompt`, `cmd_app_interrupt`,
-     `cmd_app_kill` (with the hash check, reusing step 1's cascade jq) and
-     `cmd_app_new`.
-   - Add the helpers `hc_call` (maps stderr JSON and exit codes) and
-     `app_raise_window`, which reuses the address and workspace shape checks
-     in `show_session`. Add the dispatch entries, with demo no-ops.
-   - **Fakes:**
-     - `hc send`, `read`, `interrupt` and `kill` return `FAKE_HC_<CMD>_OUT`,
-       or exit with `FAKE_HC_<CMD>_RC` and print stderr JSON;
-     - `herdr-app do` logs its argv;
-     - `pgrep` and `hyprctl clients` are steered for the window cases.
-   - **The spec's action cases:**
-     - prompt text starting with `-`, and text spanning several lines, arrives
-       as one argument after `--`;
-     - `--force` is passed only when the flag is given;
-     - each `.wait.reason` maps correctly, and so does interrupt's
-       `still_working`;
-     - exit codes 3, 9 and 11 give hc's message, and a timeout gives
-       `timed out`;
-     - herdr-app's error JSON is decoded;
-     - a kill with a stale hash returns `changed` and does not kill;
-     - window: no window starts one and then focuses it, two windows are an
-       error, and a CLI-only process is not taken for the window;
-     - every address is validated, and demo mode makes every action do
-       nothing.
+   - **Script changes.**
+     - Add `hc_call`, which maps stderr JSON and exit codes.
+     - Add `app_raise_window` (A4, reusing `show_session`'s checks and focus
+       call) and `app_start_window` (the `uwsm-app` or plain `setsid`
+       fallback, not in `JOB_PIDS`).
+     - Add `cmd_app_focus`, `cmd_app_prompt`, `cmd_app_interrupt`,
+       `cmd_app_kill` (which reuses step 1's snapshot and `app_merge_jq` to
+       recompute `cascadeKey`) and `cmd_app_new`.
+     - Add the dispatch entries, with demo no-ops.
+   - **Fakes.**
+     - `hc send`, `read`, `interrupt` and `kill` print
+       `FAKE_HC_<CMD>_OUT`, or exit `FAKE_HC_<CMD>_RC` with stderr error JSON.
+     - `herdr-app do` logs its arguments.
+     - `pgrep` and `hyprctl clients` can be steered.
+     - `uwsm-app` is present or absent.
+   - **Cases.**
+     - Prompts:
+       - a leading `-` and multi-line text each arrive as one argument after
+         `--`;
+       - `--force` is passed only when given;
+       - every `wait.reason`, including `output` and `not_started`, maps.
+     - Interrupt: every `outcome` maps.
+     - Exit codes 3, 9 and 11 give hc's message; a timeout gives
+       `timed out`; herdr-app's error JSON is decoded.
+     - Kill:
+       - a stale `cascadeKey` gives `changed` and no kill;
+       - a matching key does kill, and the fake logs `kill`.
+     - `app-new` with:
+       - all three arguments;
+       - an empty `DIR` with a machine;
+       - an empty machine;
+       - an invalid name, directory or machine, each refused.
+     - Window:
+       - none: it starts, then focuses;
+       - starts without `uwsm-app` too;
+       - two windows give an error;
+       - a CLI-only `herdr-app` process is not taken for the window;
+       - the started window is not in `JOB_PIDS`.
+     - Every address is validated. Demo mode makes every action a no-op.
 
    Verify: the same three commands as step 1.
 
-3. **`HerdrModel.qml`: the subscription, the sources, the keys and staleness
-   (A1, A5 model, A6).**
-   - **Processes and timers:**
-     - `appSubProc` with a `SplitParser`;
-     - `appCoalesce` (one-shot, 250 ms), `appWatchdog` (40 s) and
-       `appBackoff`;
-     - `appListProc`, run through #20's `launch` and `complete` pattern.
-   - **State:** `hcAvailable`, `appStale`, `appDirty`, `appError`,
+3. **`HerdrModel.qml`: subscription, sources, keys, staleness and the kill
+   confirm (A1, A5 model, A6).**
+   - **Processes and timers.**
+     - `appSubProc` (`SplitParser`; `onExited` restarts it with backoff).
+     - `appCoalesce`, `appWatchdog` and `appBackoff`, with the tunable
+       properties.
+     - `appListProc`, a `Process` with its own `kind: "applist"` handled by
+       `storeResult`/`complete`. It is **not** `launch()`, so it never
+       touches `actionError` or dismisses anything.
+   - **State.** `hcAvailable`, `appStale`, `appDirty`, `appError`,
      `appSessions`, `appHostSessions`, `appMachines`.
-   - **`rebuild()`** merges the four sources. `sessionKey` gives app rows
-     their own key, and `agentKey` uses the address for them.
-   - **Kind-aware entry points,** each a top-level function:
-     - `activateCursor` and `focusAgent` → `app-focus`;
-     - `requestInterrupt`;
-     - `askKill` and `confirmPending` → `app-kill`, with the hash, handling a
-       `changed` reply;
-     - `requestNew` captures the machine for app rows;
-     - `appRowState`, which gives "not live" for stale data or an unconnected
-       machine;
-     - kill and interrupt are refused while not live.
-   - **Display helpers:**
-     - `agentNote` and `agentColor` handle `error` and the blocked kinds;
-     - `countLabel` and `subtitleFor` handle app rows;
-     - `tooltipText` handles staleness.
-   - **`tests/session-actions.cjs`** gains the spec's model cases:
-     - coalescing under a stream of events;
-     - heartbeats reset the watchdog without triggering;
-     - `appDirty` gives exactly one more run;
-     - the four-source merge, with no key collision, and the cursor following
-       a renamed space;
-     - kind dispatch, and app rows having no destroy action;
-     - the cascade confirm, and asking again on `changed`;
-     - staleness rules, including that a restart alone doesn't clear it;
-     - an unconnected machine.
-
-   Verify:
-
-   ```bash
-   node tests/session-actions.cjs
-   omarchy plugin validate .
-   ```
-
-4. **`Menu.qml` and `Card.qml`: captured targets, keys, the confirm and
-   labels (A5 UI).**
-   - **Menu:**
-     - `beginInput` captures `{kind, host, session, pane}` for `a` and
-       `{kind, machine}` for `n`;
-     - `submitPrompt` and `submitNew` route by the captured kind
-       (`app-prompt`, with `--force` only after the busy confirmation;
-       `app-new`);
-     - `promptDone` handles `note`.
-   - **Card:**
-     - `i` in the key handler calls `herd.requestInterrupt()`;
-     - app rows show no destroy button;
-     - the subtitle and labels follow A5;
-     - the confirm message comes from `herd.confirmMessage()`, which now
-       includes the cascade.
-   - **Tests:** extend the Menu block in `tests/session-actions.cjs`:
-     - a target captured on an app row survives a cursor move;
-     - an app prompt routes to `app-prompt`, with `--force` only after the
-       confirmation.
+   - **`complete("applist")`** splits rows by host (menu instance only),
+     clears `appStale`, and resets the backoff.
+   - **`rebuild()`** merges the four sources. `sessionKey` and `agentKey`
+     follow A5. Add `validHcAddress`.
+   - **Kind-aware entry points.**
+     - `activateCursor`, including an app row header, and `focusAgent`.
+     - `requestInterrupt()`.
+     - `askKill`, `confirmPending`, and the `changed` reply, which updates the
+       confirm target's cascade and calls `activeCard.beginConfirm()` again.
+     - `confirmMessage()` with the cascade line.
+     - `requestNew` captures the host.
+     - `appRowNotLive(session)`, and A6's refusal of every app action.
+   - **Display helpers.**
+     - `agentNote(status, kind)`, with `kind` optional.
+     - `agentColor` for `error`.
+     - `countLabel` and `subtitleFor` for app rows.
+     - `tooltipText` when stale.
+     - An interrupt `note` goes into `actionError`.
+   - **`tests/session-actions.cjs`, model-level cases only.**
+     - Coalescing under a stream; heartbeats reset the watchdog without
+       triggering; `appDirty` gives exactly one more run.
+     - A watchdog timeout, or an `onExited`, sets stale and schedules a
+       restart; only a successful `app-list` clears stale and resets the
+       backoff.
+     - A start failure sets `hcAvailable = false`, with no retry.
+     - The four-source merge with the menu split; the bar never gets remote
+       rows; no key collision; the cursor follows a renamed space.
+     - Kind dispatch to the right subcommands and arguments:
+       - `app-new` always gets three arguments;
+       - `app-kill` gets `cascadeKey`;
+       - a `changed` reply reopens the confirm with the new cascade.
+     - `confirmMessage()` names the cascade.
+     - A "not live" row (stale, or its machine not connected) refuses focus,
+       prompt, interrupt, kill and new.
 
    Verify: `node tests/session-actions.cjs`, then `omarchy plugin validate .`.
 
-5. **`tests/app-subscription.qml`: the QML wiring check (spec R5).**
-   - A minimal QML file instantiates `HerdrModel` with `script` pointing at a
-     stub, and `hc` on `PATH` pointing at a fake that prints a snapshot, then
-     event lines in quick succession, then heartbeats.
-   - It asserts that one `app-list` run happens (counted by the stub), then
-     exits.
-   - It runs headless with `QT_QPA_PLATFORM=offscreen qs -p
-     tests/app-subscription.qml`, wrapped in `tests/app-subscription.sh`.
-   - **If `qs` can't load a single file headless here,** the step stops and
-     reports it. The check then becomes a step 8 live item, and is recorded as
-     a deviation, not forced.
+4. **`Menu.qml` and `Card.qml`: captured targets, keys, rendering and the
+   error line (A5 UI, A6 UI).**
+   - **Menu.**
+     - `beginInput` captures A5's targets.
+     - `targetStatus` reads the captured target.
+     - `submitPrompt` routes by the captured kind (`app-prompt`, with
+       `--force` only after the busy confirmation).
+     - `submitNew` routes to `herd.newAppSpace(host, name, dir)`.
+   - **Card.**
+     - `i` in the key handler calls `herd.requestInterrupt()`.
+     - App rows render no destroy button.
+     - Labels follow A5.
+     - The error line follows A6's order (`appError` after `errorText`).
+   - **Tests:** extend the Menu block in `tests/session-actions.cjs`.
+     - A captured app target survives a cursor move.
+     - An app prompt routes to `app-prompt`, with `--force` only after the
+       confirmation.
+     - New on an app row goes to the app path.
+     - Card's pure helpers, where they exist, cover no destroy on app rows and
+       the error order.
+
+   Verify: `node tests/session-actions.cjs`, then `omarchy plugin validate .`.
+
+5. **`tests/app-subscription.qml` and `tests/app-subscription.sh`: the QML
+   wiring (R5).**
+   - **Setup.**
+     - Instantiate `HerdrModel` with `appCoalesceMs: 100`,
+       `appWatchdogMs: 1500` and `appBackoffMs: 200`.
+     - `script` points at a stub that counts `app-list` runs into a file and
+       prints valid JSON.
+     - `hc` on `PATH` is a fake that prints a snapshot, then five event lines
+       50 ms apart, then goes silent.
+   - **Asserts.**
+     1. The burst gives exactly one `app-list` run, within 500 ms.
+     2. After the silence, the watchdog fires: `appStale` is true and the
+        fake is started again (it logs its start).
+     3. After the restart's snapshot and one `app-list`, `appStale` is false.
+   - **Running it.** `QT_QPA_PLATFORM=offscreen qs -p
+     tests/app-subscription.qml`, wrapped in a 20 s `timeout`. It exits 0 on
+     success and 1 with the failing assert.
+   - **If `qs` cannot load a single file headless here,** the step stops and
+     reports to the lead. The lead asks the owner before replacing it. It is
+     never skipped silently.
 
    Verify: `bash tests/app-subscription.sh` exits 0.
 
 6. **`README.md` and `manifest.json`.**
-   - `"version": "1.1.0"`. This is a feature; the `description` adds "and the
+   - **Manifest.** `"version": "1.1.0"`. The `description` adds "and the
      herdr desktop app's agents".
-   - In the README, a short "Desktop app (herdr-core)" section:
-     - spaces as rows, done or seen following the window;
-     - keys `i` and `K` on app agents, with the cascade confirm;
-     - app rows never close a space or stop the core;
-     - remote machines come from `hc machine ls`, menu only;
-     - machines with only hc are supported.
-   - The keybinding tables gain `i`.
+   - **README:** a short "Desktop app (herdr-core)" section.
+     - Spaces show as rows.
+     - Done and seen follow the window's attention.
+     - Keys: `i` interrupts, `K` ends an agent, and the confirmation names
+       what ends with it.
+     - It never closes a space or stops the core.
+     - Remote agents come from `hc machine ls`, in the menu only.
+     - Machines with only hc work.
+     - "not live" shows when herdr-core can't be reached.
+   - **Keybinding tables** gain `i`.
 
    Verify: `jq -e '.version == "1.1.0"' manifest.json`, then
    `omarchy plugin validate .`.
 
-7. **Lead: review fixes, push and PR.**
-   - Commit each step after reviewing its diff.
-   - Then the reviews below. Fixes are committed, then `git status
-     --porcelain` must be clean.
-   - Push, and open the PR linking the intent, spec and plan. It is merged
+7. **Lead: commit per step, review, push and PR.**
+   - Commit each step after reviewing its diff. The reviews are listed below.
+   - Fixes are committed, and the tree must be clean.
+   - Push, then open the PR linking the intent, spec and plan. It is merged
      with `--merge`, with your OK.
 
-8. **Lead, after merge and deploy: the live checks.** The deploy is a
-   nixarchy pin bump plus the p620 deploy, with your OK and announced on the
-   bus. The checks use throwaway labelled terminals, killed afterwards.
-   - **An agent in its space row:**
-     - blocked turns the badge red;
-     - done then seen follows the window's attention, with the window open and
-       with it closed.
-   - **Focus** with the window closed opens it and lands on the agent.
-   - **Prompt,** including `--force` on a blocked agent.
-   - **Interrupt.**
-   - **Kill,** with the confirmation naming the sub-agents.
-   - **A `razer/tN` agent** (`hc run --on razer`) appears in the menu only.
-   - **The `i` key.**
-   - **On a host without hc,** the bar's cost is unchanged.
+8. **Lead, after merge and deploy: live checks.**
+   - **Prerequisites:** a nixarchy pin bump, the p620 deploy with the owner's
+     OK and a bus announcement, and razer reachable. Use throwaway labelled
+     terminals and kill them afterwards.
+   - **An agent in its space row.**
+     - Blocked turns the badge red.
+     - Done, then seen, follows the window's attention, with the window open
+       and with it closed.
+     - R1's sequence: finish twice with the window closed, and note what
+       shows.
+   - **Actions.**
+     - Focus with the window closed opens it and lands on the agent.
+     - Prompt, including `--force` on a blocked agent.
+     - Interrupt.
+     - Kill, with the confirmation naming the sub-agents.
+   - **Remote.** A `razer/tN` agent (`hc run --on razer`) shows in the menu
+     only. Disconnecting razer marks its rows "not live".
+   - **The `i` key** works.
+   - **On a host without hc,** the bar costs no more than before.
 
 ## Tests
 
 ```bash
 for f in bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh; do bash -n "$f"; done
 shellcheck bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh
-bash tests/herdr-sessions.sh        # existing cases plus about 30 new, all ok
-node tests/session-actions.cjs      # existing cases plus about 15 new, all PASS
-bash tests/app-subscription.sh      # step 5, or a recorded deviation
+bash tests/herdr-sessions.sh        # existing cases plus about 40 new, all ok
+node tests/session-actions.cjs      # existing cases plus about 18 new, all PASS
+bash tests/app-subscription.sh      # step 5
 omarchy plugin validate .
 ```
 
 ## Review
 
-- **Opus:** a fresh agent gets this plan plus
+- **Opus:** a fresh agent gets this plan and
   `git diff master...feat/22-herdr-core-app`.
-- **codex:** this plan plus the diff of `HerdrModel.qml`, `Menu.qml` and
-  `Card.qml`; it may open those files in full.
-- **agy:** this plan plus the diff of `bin/herdr-sessions` only.
+- **codex:** this plan plus the diff of `HerdrModel.qml`, `Menu.qml`,
+  `Card.qml`, `tests/session-actions.cjs` and `tests/app-subscription.*`. It
+  may open those files in full.
+- **agy:** this plan, the diff of `bin/herdr-sessions`, and the bodies of the
+  existing helpers it calls: `bounded`, `kill_tree`, `run_dir_init`, `die`
+  and `show_session`.
 
 The lead weighs the findings. Agent output never approves anything.
 
@@ -401,5 +534,4 @@ The lead weighs the findings. Agent output never approves anything.
 
 - **Before merge:** delete the branch.
 - **After merge:** `git revert -m 1 <merge commit>`.
-- **No state migration.** The plugin only reads hc and herdr-app state
-  (`view.json` is read-only to it).
+- **No state migration.** The plugin only reads hc and herdr-app state.
