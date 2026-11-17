@@ -8,7 +8,10 @@ const context = { root: { script: 'herdr-sessions' }, actionProc: {}, killProc: 
                   activeCard: null, confirmTarget: null, confirmAction: '', confirmOpen: false,
                   sessions: [], hostState: { razer: 'ok', p620: 'ok' }, actionError: '',
                   settleTimer: { restart() {} }, actionFinished() {},
-                  confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false };
+                  confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false,
+                  hcAvailable: true, blockedCount: 0, doneCount: 0 };
+Object.defineProperty(context, 'appMark', { get() { return this.hcAvailable && this.appStale; } });
+context.root.urgent = 'URGENT'; context.root.finished = 'GREEN'; context.root.working = 'AMBER';
 vm.createContext(context);
 for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent',
                     'removeSession', 'killSession', 'askKill', 'askDelete', 'ask',
@@ -25,7 +28,7 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
                     'appRunList', 'appSubDown', 'appSubExited', 'appSubStartFailed',
                     'applyAppList', 'appMachineState', 'appRowStale', 'appRowNotLive',
                     'appLaunch', 'confirmMessage', 'subtitleFor', 'agentNote', 'agentColor',
-                    'activateCursor', 'errorLine']) {
+                    'activateCursor', 'errorLine', 'badgeColor']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
   assert.ok(match, `Missing function: ${name}`);
   vm.runInContext(match[0], context);
@@ -54,6 +57,18 @@ for (const host of [undefined, '', 'razer', 'p620']) {
       assert.equal((action === 'kill' ? context.actionProc : context.killProc).running, false);
     }
   }
+}
+{
+  const saved = [context.appStale, context.hcAvailable, context.doneCount];
+  context.doneCount = 2; context.appStale = false;
+  assert.equal(context.badgeColor(), 'GREEN');
+  context.appStale = true;
+  assert.equal(context.badgeColor(), 'URGENT', 'stale is never green');
+  context.doneCount = 0;
+  assert.equal(context.badgeColor(), 'URGENT', 'stale with no agents');
+  context.hcAvailable = false;
+  assert.equal(context.badgeColor(), 'AMBER', 'no hc, no mark');
+  [context.appStale, context.hcAvailable, context.doneCount] = saved;
 }
 console.log('PASS: local and remote open, focus, fallback, kill and delete routing');
 

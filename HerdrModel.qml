@@ -133,6 +133,10 @@ Item {
   // only says "something changed") and `herdr-sessions app-list`.
   property bool hcAvailable: true
   property bool appStale: false
+  // A failure mark for the bar badge: unconditional while stale, but never when
+  // hc is absent (that case is silent by design).
+  readonly property bool appMark: hcAvailable && appStale
+  readonly property bool badgeShown: appMark || (reachable && runningCount > 0 && badgeActive)
   property bool appDirty: false
   property bool appSubLive: false
   property string appError: ""
@@ -932,6 +936,7 @@ Item {
   }
 
   function badgeColor() {
+    if (appMark) return root.urgent
     if (blockedCount > 0) return root.urgent
     if (doneCount > 0) return root.finished
     return root.working

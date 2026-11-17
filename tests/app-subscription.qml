@@ -41,12 +41,17 @@ ShellRoot {
       // 1. One burst, one app-list, well within 500 ms of it.
       if (elapsed < 1000) return
       if (starts !== 1) return fail("the subscription did not start exactly once")
+      if (m.badgeShown) return fail("a live subscription with no agents must show no badge")
       if (runs !== 1) return fail("a burst must give exactly one app-list run")
       if (m.appStale || !m.hcAvailable) return fail("a live subscription must not be stale")
       phase = 1
     } else if (phase === 1) {
       // 2. Silence: the watchdog marks it stale and the fake is started again.
-      if (m.appStale) phase = 2
+      if (m.appStale) {
+        // Stale with zero agents still shows the failure mark.
+        if (m.runningCount !== 0 || !m.appMark || !m.badgeShown) return fail("stale must show the mark with zero agents")
+        phase = 2
+      }
       else if (elapsed > 4000) fail("the watchdog never fired")
     } else if (phase === 2) {
       if (starts >= 2) phase = 3
