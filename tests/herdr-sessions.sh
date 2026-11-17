@@ -1025,7 +1025,10 @@ reset
 # A bare head -n 1 must allocate the 64 MiB line and fail under this limit.
 out=$( (ulimit -v 98304; FAKE_HC_SNAPSHOT_BYTES=67108864 "$script" app-list) 2>"$tmp/oversized.err")
 check "64 oversized snapshot within memory limit" jq -e '.error == "could not read herdr-core"' <<<"$out"
-check "64 oversized snapshot without allocation failure" test ! -s "$tmp/oversized.err"
+# Only an allocation failure counts; CI shells may print unrelated job notices.
+# shellcheck disable=SC2016 # $1 expands in the inner bash
+check "64 oversized snapshot without allocation failure" \
+  bash -c '! grep -qiE "memory|alloc|cannot allocate|killed" "$1"' _ "$tmp/oversized.err"
 
 mkdir -p "$tmp/only-jq"
 ln -s "$(command -v jq)" "$tmp/only-jq/jq"
