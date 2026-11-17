@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import Quickshell
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -43,8 +44,8 @@ PanelKeyCatcher {
   // rule are always there, the warning and the empty line only sometimes, and
   // a Column puts a gap under each of them.
   readonly property real chrome: {
-    var count = 2
-    var height = headerRow.height + rule.height
+    var count = 3
+    var height = headerRow.height + rule.height + footer.height
     if (staleBox.visible) { count += 1; height += staleBox.height }
     if (emptyBox.visible) { count += 1; height += emptyBox.height }
     return height + content.spacing * count
@@ -63,13 +64,56 @@ PanelKeyCatcher {
 
   // The cursor scrolls the list it is actually walking, which is whichever of
   // the two cards is on screen. The widget picks; this is how it reaches in.
-  function showRow(index) {
-    list.positionViewAtIndex(index, ListView.Contain)
+  function showRow(si, ai) {
+    if (ai === undefined || ai < 0 || !list.itemAtIndex(si))
+      list.positionViewAtIndex(si, ListView.Contain)
+    if (ai === undefined || ai < 0) return
+    Qt.callLater(function() {
+      var item = list.itemAtIndex(si)
+      var agent = item ? item.agentRepeater.itemAt(ai) : null
+      if (!agent) return
+      var top = agent.mapToItem(list.contentItem, 0, 0).y
+      list.contentY = card.scrollTarget(list.contentY, list.height, top, top + agent.height,
+                                        list.originY, list.contentHeight)
+    })
+  }
+
+  // Where contentY has to go so [top, bottom] is in view: nearest edge, the
+  // top of a row taller than the view, and never past either end.
+  function scrollTarget(contentY, height, top, bottom, originY, contentHeight) {
+    var y = contentY
+    if (top < y) y = top
+    else if (bottom > y + height) y = bottom - height
+    if (bottom - top > height) y = top
+    return Math.max(originY, Math.min(y, originY + contentHeight - height))
   }
 
   function beginConfirm() {
-    destroyConfirm.selectedIndex = 0
-    Qt.callLater(function() { confirmKeys.forceActiveFocus() })
+    destroyConfirm.dialog.selectedIndex = 0
+    Qt.callLater(function() { destroyConfirm.forceActiveFocus() })
+  }
+
+  // The sheet is a picker that wants the keyboard, so the surface goes first.
+  function openKeys() {
+    panel.close()
+    Quickshell.execDetached([Qt.resolvedUrl("bin/herdr-menu-keys").toString().replace(/^file:\/\//, "")])
+  }
+
+  // Shift is allowed (it is how + is typed); Alt and Meta belong to the compositor.
+  function handleTextKey(t, modifiers) {
+    if (modifiers & (Qt.AltModifier | Qt.MetaModifier)) return
+    var session = panel.sessionAt(panel.cursor)
+    if (t === "+" || t === "=") panel.textBigger()
+    else if (t === "-") panel.textSmaller()
+    else if (t === "0") panel.textReset()
+    else if (t === "?") card.openKeys()
+    else if (t === "o" && session) panel.openSession(session)
+    else if (t === "K") card.deleteRequested()
+    else if (t === "p" && panel.pinnable !== false) panel.togglePin(true)
+    else if (t === "r") panel.refresh()
+    else if (t === "n") panel.requestNew()
+    else if (t === "a") panel.requestPrompt()
+    else if (t === "i") panel.requestInterrupt()
   }
 
   // Focus goes back to the card by hand on the way out. The key catcher gave
@@ -84,33 +128,40 @@ PanelKeyCatcher {
   // than opening whatever the cursor was on.
   blocked: panel.confirmOpen
   onCloseRequested: panel.close()
-  onMoveRequested: function(dx, dy) {
-    if (dy !== 0) panel.moveCursor(dy)
-    else if (dx !== 0) panel.moveColumn(dx)
-  }
-  onTabRequested: function(direction) { panel.cycleColumn(direction) }
+  onMoveRequested: function(dx, dy) { if (dy !== 0) panel.moveCursor(dy) }
   // Only activateRequested, never returnRequested as well: Enter fires
   // both, and a handler on each runs the action twice.
   onActivateRequested: panel.activateCursor()
   // PanelKeyCatcher takes `x` for itself and turns it into this signal, and
-  // takes `k` as vim's "up" before any letter handler sees it - so the kill
-  // key is the shifted `K`, which arrives as an ordinary letter.
+  // takes `k` as vim's "up"; K arrives through textKey and does the same.
   onDeleteRequested: {
-    var target = panel.sessionAt(panel.cursor)
-    if (target) panel.askDelete(target)
-  }
-  onTextKey: function(t) {
-    // The letter keys stay about the server, wherever inside it the
-    // cursor happens to be: you kill a server, never an agent. On a desktop
-    // app row there is no server to kill, so K and i act on the agent.
+    // One key for whatever the row allows: kill a running server, delete a
+    // stopped session, end an app agent (askKill routes app rows to the agent).
     var session = panel.sessionAt(panel.cursor)
-    if (t === "o" && session) panel.openSession(session)
-    else if (t === "K" && session) panel.askKill(session)
-    else if (t === "p" && panel.pinnable !== false) panel.togglePin()
-    else if (t === "r") panel.refresh()
-    else if (t === "n") panel.requestNew()
-    else if (t === "a") panel.requestPrompt()
-    else if (t === "i") panel.requestInterrupt()
+    if (!session) return
+    if (session.kind === "app" || session.running) panel.askKill(session)
+    else panel.askDelete(session)
+  }
+  onTextKey: function(t, modifiers) { card.handleTextKey(t, modifiers) }
+
+  // The size chords work on the bar surfaces; the menu owns its own.
+  Shortcut {
+    enabled: panel.pinnable !== false
+    context: Qt.WindowShortcut
+    sequences: ["Ctrl+=", "Ctrl++", "Ctrl+Shift+="]
+    onActivated: panel.textBigger()
+  }
+  Shortcut {
+    enabled: panel.pinnable !== false
+    context: Qt.WindowShortcut
+    sequence: "Ctrl+-"
+    onActivated: panel.textSmaller()
+  }
+  Shortcut {
+    enabled: panel.pinnable !== false
+    context: Qt.WindowShortcut
+    sequence: "Ctrl+0"
+    onActivated: panel.textReset()
   }
 
   Column {
@@ -157,7 +208,7 @@ PanelKeyCatcher {
                 width: Math.max(2, Style.space(3))
                 height: width
                 radius: width / 2
-                color: Qt.darker(panel.foreground, 2.2)
+                color: Qt.alpha(panel.foreground, .62)
               }
             }
           }
@@ -191,15 +242,16 @@ PanelKeyCatcher {
         // surface says whether pinning means anything here.
         visible: card.panel.pinnable !== false
         width: visible ? implicitWidth : 0
+        Accessible.name: panel.pinned ? "Unpin" : "Pin"
         iconText: panel.iconPin
         tooltipText: panel.pinned
           ? "Put it back in the bar (p)"
           : "Keep this panel on screen (p)"
-        foreground: panel.pinned ? panel.accent : Qt.darker(panel.foreground, 1.5)
+        foreground: panel.pinned ? panel.accent : Qt.alpha(panel.foreground, .88)
         hoverColor: panel.accent
         fontFamily: panel.fontFamily
         fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
-        onClicked: panel.togglePin()
+        onClicked: panel.togglePin(false)
       }
     }
 
@@ -250,6 +302,8 @@ PanelKeyCatcher {
         Accessible.role: Accessible.ListItem
         // sessionLabel already names the host, when there is one.
         Accessible.name: panel.sessionLabel(modelData) + ", " + panel.countLabel(modelData)
+        Accessible.focused: panel.cursorOnSession(row.index) && !panel.agentAt(panel.cursor)
+        readonly property alias agentRepeater: agentRepeater
 
         // The session is lit whenever the cursor is anywhere inside it, so
         // the action buttons on the right stay reachable while you walk
@@ -329,7 +383,7 @@ PanelKeyCatcher {
                 font.bold: row.modelData.windowAddress !== ""
                 color: row.modelData.running
                   ? panel.foreground
-                  : Qt.darker(panel.foreground, 1.6)
+                  : Qt.alpha(panel.foreground, .85)
               }
 
               Row {
@@ -362,7 +416,7 @@ PanelKeyCatcher {
                   textFormat: Text.PlainText
                   font.family: panel.fontFamily
                   font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
-                  color: Qt.darker(panel.foreground, 1.7)
+                  color: Qt.alpha(panel.foreground, .82)
                 }
               }
             }
@@ -376,13 +430,14 @@ PanelKeyCatcher {
               elide: Text.ElideRight
               font.family: panel.fontFamily
               font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
-              color: Qt.darker(panel.foreground, 1.9)
+              color: Qt.alpha(panel.foreground, .78)
             }
 
             // What each agent in there is actually doing. The title is
             // whatever the agent wrote to the terminal, so it is external
             // text: plain, elided, and never markup.
             Repeater {
+              id: agentRepeater
               model: panel.agentsOf(row.modelData)
 
               // A row rather than a Row: the note is right-aligned so the
@@ -400,6 +455,7 @@ PanelKeyCatcher {
                 required property int index
 
                 Accessible.role: Accessible.ListItem
+                Accessible.focused: panel.cursorOnAgent(row.index, agentRow.index)
                 Accessible.name: panel.cleanTitle(agentRow.modelData.title)
                                  + (panel.agentPlace(agentRow.modelData)
                                     ? ", " + panel.agentPlace(agentRow.modelData) : "")
@@ -425,7 +481,7 @@ PanelKeyCatcher {
                 // out right in its own colour. Give any two of them the
                 // same weight and the panel turns into a wall of text.
                 readonly property bool lit: agentMouse.containsMouse
-                  || (panel.cursorInBody() && panel.cursorOnAgent(row.index, agentRow.index))
+                  || panel.cursorOnAgent(row.index, agentRow.index)
                 readonly property bool wants: panel.agentWants(modelData.status)
 
                 // An agent that wants something colours its whole line and not
@@ -522,7 +578,7 @@ PanelKeyCatcher {
                   font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
                   color: agentRow.wants || agentRow.lit
                     ? panel.foreground
-                    : Qt.darker(panel.foreground, 1.3)
+                    : Qt.alpha(panel.foreground, .94)
                 }
 
                 Text {
@@ -545,8 +601,8 @@ PanelKeyCatcher {
                   // not: what the agent called itself is the detail, the
                   // place is the heading.
                   color: agentRow.wants || agentRow.lit
-                    ? Qt.darker(panel.foreground, 1.5)
-                    : Qt.darker(panel.foreground, 2.1)
+                    ? Qt.alpha(panel.foreground, .88)
+                    : Qt.alpha(panel.foreground, .68)
                 }
 
                 Text {
@@ -602,8 +658,8 @@ PanelKeyCatcher {
             // keyboard too, so the cursor looks the same whether it got
             // there by pointing or by pressing Right.
             PanelActionButton {
+              Accessible.name: "Open session"
               hasCursor: panel.cursorOnSession(row.index)
-                && panel.column === panel.columnOpen
               iconText: panel.iconOpen
               tooltipText: row.modelData.windowAddress !== ""
                 ? "Focus this session" : "Open this session"
@@ -628,12 +684,12 @@ PanelKeyCatcher {
 
               PanelActionButton {
                 id: killButton
+                Accessible.name: "Kill server"
                 hasCursor: panel.cursorOnSession(row.index)
-                  && panel.column === panel.columnDestroy
                 visible: row.modelData.running && row.modelData.kind !== "app"
                 iconText: panel.iconKill
                 tooltipText: "Kill this server"
-                foreground: Qt.darker(panel.foreground, 1.4)
+                foreground: Qt.alpha(panel.foreground, .91)
                 hoverColor: panel.urgent
                 fontFamily: panel.fontFamily
                 fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
@@ -641,13 +697,13 @@ PanelKeyCatcher {
               }
 
               PanelActionButton {
+                Accessible.name: "Delete session"
                 hasCursor: panel.cursorOnSession(row.index)
-                  && panel.column === panel.columnDestroy
                 visible: !row.modelData.running && !row.modelData.isDefault
                   && row.modelData.kind !== "app"
                 iconText: panel.iconTrash
                 tooltipText: "Delete this session"
-                foreground: Qt.darker(panel.foreground, 1.4)
+                foreground: Qt.alpha(panel.foreground, .91)
                 hoverColor: panel.urgent
                 fontFamily: panel.fontFamily
                 fontSize: Math.round(Style.font.iconSmall * card.panel.textScale)
@@ -673,12 +729,27 @@ PanelKeyCatcher {
         anchors.centerIn: parent
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
-        text: "No herdr sessions"
+        text: panel.pinnable === false
+          ? "No herdr sessions. Press n to start one." : "No herdr sessions."
         textFormat: Text.PlainText
         font.family: panel.fontFamily
         font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
-        color: Qt.darker(panel.foreground, 1.8)
+        color: Qt.alpha(panel.foreground, .80)
       }
+    }
+
+    // The keys, where a glance finds them. ? opens the full sheet.
+    Text {
+      id: footer
+      width: parent.width
+      text: panel.pinnable === false
+        ? "n new · a ask · i stop · x end · ± size · ? keys"
+        : "o open · i stop · x end · ± size · ? keys"
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      font.family: panel.fontFamily
+      font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
+      color: Qt.alpha(panel.foreground, .68)
     }
   }
 
@@ -692,41 +763,18 @@ PanelKeyCatcher {
   //
   // Only alive while it is asking - an invisible item cannot hold focus,
   // which is what keeps the panel's own keys working the rest of the time.
-  Item {
-    id: confirmKeys
-    anchors.fill: parent
-    z: 10
-    visible: panel.confirmOpen
-    focus: panel.confirmOpen
-
-    Keys.priority: Keys.BeforeItem
-    Keys.onPressed: function(event) {
-      if (destroyConfirm.handleKey(event)) event.accepted = true
-    }
-
-    // Swallows every click, hover and scroll while the dialog is up, so
-    // nothing underneath it can be hit while it is asking.
-    MouseArea {
-      anchors.fill: parent
-      acceptedButtons: Qt.AllButtons
-      hoverEnabled: true
-      onWheel: function (wheel) { wheel.accepted = true }
-    }
-
-    ConfirmDialog {
-      id: destroyConfirm
-      anchors.fill: parent
-      opened: panel.confirmOpen
-      // ConfirmDialog draws the message with the shell's own Text, so
-      // `textFormat` there is not ours to set and the session name - which
-      // is whatever was passed to `herdr --session` - is stripped instead.
-      message: panel.plain(panel.confirmMessage())
-      confirmText: panel.confirmAction === "delete" ? "Delete" : "Kill"
-      background: Commons.Color.background
-      foreground: panel.foreground
-      fontFamily: panel.fontFamily
-      onCanceled: panel.closeConfirm()
-      onConfirmed: panel.confirmPending()
-    }
+  ConfirmOverlay {
+    id: destroyConfirm
+    opened: panel.confirmOpen
+    // ConfirmDialog draws the message with the shell's own Text, so
+    // `textFormat` there is not ours to set and the session name - which
+    // is whatever was passed to `herdr --session` - is stripped instead.
+    message: panel.plain(panel.confirmMessage())
+    confirmText: panel.confirmAction === "delete" ? "Delete" : "Kill"
+    foreground: panel.foreground
+    fontFamily: panel.fontFamily
+    textScale: card.panel.textScale
+    onCanceled: panel.closeConfirm()
+    onConfirmed: panel.confirmPending()
   }
 }
