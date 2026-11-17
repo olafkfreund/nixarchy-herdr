@@ -319,10 +319,15 @@ app_merge_jq=$(cat <<'JQ'
         | {address, title}] | sort_by(.address)) as $cascade
     | . + {cascade: $cascade, cascadeKey: ($cascade | map(.address) | join(","))}
     | . + {displayStatus:
-      (if $windowOpen == true and $appStatus[.address] != null then $appStatus[.address]
-       elif .status.state == "done" and $attention[.address].word == "done" and
-            $attention[.address].seen == true then "idle"
-       else .status.state end)}]
+      ((.labels["herdr.seen"] | try tonumber catch null) as $seen
+       | if $windowOpen == true and $appStatus[.address] != null then $appStatus[.address]
+         elif .status.state == "idle" or .status.state == "done" then
+           if $seen != null then
+             if ((.turn | try tonumber catch null) // 0) > $seen then "done" else "idle" end
+           elif .status.state == "done" and $attention[.address].word == "done" and
+                $attention[.address].seen == true then "idle"
+           else .status.state end
+         else .status.state end)}]
   | if $targetAddr == "" then . else map(select(.address == $targetAddr)) end as $agents
   | ($agents | group_by([.machine, .spaceId]) | map(
       . as $group | ($group[0]) as $first

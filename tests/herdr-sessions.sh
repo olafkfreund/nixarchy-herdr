@@ -885,7 +885,7 @@ check "58 no snapshot child left" test -z "$surviving"
 reset
 FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[
   {"address":"t1","state":"live","status":null,"parent":null,"die_with_parent":false,"labels":{"herdr.space":"sp1","where":"old / Tab"},"title":"shell","argv":[],"status_ms":0},
-  {"address":"t2","state":"live","status":{"state":"done","kind":null},"parent":"t1","die_with_parent":true,"labels":{"where":"renamed / Team / Work"},"title":"agent","argv":[],"status_ms":5},
+  {"address":"t2","state":"live","status":{"state":"done","kind":null},"parent":"t1","die_with_parent":true,"labels":{"where":"renamed / Team / Work"},"title":"agent","argv":[],"turn":2,"status_ms":5},
   {"address":"t3","state":"live","status":{"state":"blocked","kind":"question"},"parent":"t2","die_with_parent":true,"labels":{},"title":"child","argv":[],"status_ms":6},
   {"address":"t4","state":"live","status":{"state":"working","kind":null},"parent":"t2","die_with_parent":false,"labels":{},"title":"other","argv":[],"status_ms":7},
   {"address":"razer/t2","state":"live","status":{"state":"working","kind":null},"parent":"t1","die_with_parent":true,"labels":{"herdr.space":"sp1","where":"remote / Tab"},"title":"remote","argv":[],"status_ms":8},
@@ -915,9 +915,30 @@ check "60 app remote and machines" jq -e '
   (.sessions[] | select(.host == "razer") | .spaceId == "sp1")' <<<"$out" ||
   printf '  got: %.500s\n' "$out"
 out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
-check "60 seen done falls back to idle" jq -e '
+check "60 no seen label falls back to attention" jq -e '
   .windowOpen == false and
   ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+base_snapshot=$FAKE_HC_SNAPSHOT
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
+  (.status.state = "idle" | .turn = 4 | .labels["herdr.seen"] = "3")' <<<"$base_snapshot")
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 unseen idle turn is done" jq -e '
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "done")' <<<"$out"
+out=$("$script" app-list)
+check "60 open window status takes precedence" jq -e '
+  .windowOpen == true and
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
+  (.turn = 4 | .labels["herdr.seen"] = "4")' <<<"$base_snapshot")
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 seen done turn is idle" jq -e '
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
+  (.labels["herdr.seen"] = "invalid")' <<<"$base_snapshot")
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 invalid seen label falls back to attention" jq -e '
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+FAKE_HC_SNAPSHOT=$base_snapshot
 FAKE_HC_SNAPSHOT=$(jq -c '.terminals += [
   {address:"t6",state:"live",status:{state:"error",kind:null},parent:null,
    die_with_parent:false,labels:{"herdr.space":"sp2","where":"renamed / Team / Work"},
