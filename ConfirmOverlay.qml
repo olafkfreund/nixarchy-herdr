@@ -19,8 +19,8 @@ Item {
   property string confirmText: ""
   property color foreground: Commons.Color.foreground
   property string fontFamily: Style.font.family
-  // ConfirmDialog sizes its own text from the theme; the surface's scale is
-  // carried so a caller never has to know that.
+  // The shell's ConfirmDialog sizes its text from the theme and takes no
+  // scale, so this is passed through but has no effect yet.
   property real textScale: 1.0
   readonly property alias dialog: dialog
 

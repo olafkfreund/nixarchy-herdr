@@ -191,3 +191,20 @@ console.log('PASS: no column cursor, no Qt.darker, ConfirmOverlay exists');
   ctx.textFileLoaded(null); assert.equal(ctx.textReading, false, 'a failed load clears the flag');
   console.log('PASS: a change during a read is queued');
 }
+
+// A size file missing at start is looked for again on each poll.
+{
+  const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+  const src = fs.readFileSync(`${__dirname}/../HerdrModel.qml`, 'utf8');
+  const ctx = { textReading: true, textReadAgain: false, textMissing: false, reloads: 0,
+    textFile: { reload() { ctx.reloads++ } }, applyTextScale() {} };
+  vm.createContext(ctx);
+  for (const n of ['textFileChanged', 'textFileLoaded'])
+    vm.runInContext(src.match(new RegExp('  function ' + n + '\\([^]*?\\n  \\}'))[0], ctx);
+  ctx.textFileLoaded(null);
+  assert.equal(ctx.textMissing, true, 'a failed load marks the file missing');
+  assert.match(src, /function applyPayload\(text, code\) \{\n    if \(textMissing\) textFileChanged\(\)/, 'each poll re-reads a missing file');
+  ctx.textFileLoaded('1.2');
+  assert.equal(ctx.textMissing, false, 'a good load clears it');
+  console.log('PASS: a missing size file is re-read on each poll');
+}

@@ -1025,6 +1025,7 @@ Item {
   // A read is in flight from start; a change during one is read after it.
   property bool textReading: true
   property bool textReadAgain: false
+  property bool textMissing: false
   readonly property string textScalePath:
     (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache"))
     + "/omarchy-herdr/text-scale"
@@ -1049,6 +1050,8 @@ Item {
   }
   function textFileLoaded(text) {
     textReading = false
+    // A file that isn't there yet can't be watched; each poll looks again.
+    textMissing = text === null
     if (text !== null) applyTextScale(text)
     if (textReadAgain) { textReadAgain = false; textReading = true; textFile.reload() }
   }
@@ -1257,6 +1260,7 @@ Item {
   }
 
   function applyPayload(text, code) {
+    if (textMissing) textFileChanged()
     try {
       var data = JSON.parse(text)
       reachable = data.ok === true && !(code > 0)

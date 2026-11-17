@@ -93,8 +93,9 @@ assert.doesNotMatch(menu, /ConfirmDialog/);
 assert.match(menu, /WlrLayershell\.layer: WlrLayer\.Overlay/);
 assert.doesNotMatch(menu, /readonly property real textScale/);
 assert.match(menu, /Style\.space\(760\) \* herd\.textScale/);
-for (const seq of ['"Ctrl+="', '"Ctrl++"', '"Ctrl+Shift+="', '"Ctrl+-"', '"Ctrl+0"'])
+for (const seq of ['"Ctrl+="', '"Ctrl++"', '"Ctrl+-"', '"Ctrl+0"'])
   assert.ok(menu.includes(seq), seq);
+assert.doesNotMatch(menu, /Ctrl\+Shift\+=/, 'no ambiguous Ctrl+Shift+= next to Ctrl++');
 assert.equal((menu.match(/context: Qt\.WindowShortcut/g) || []).length, 3);
 assert.match(menu, /herd\.textBigger\(\)[^]*herd\.textSmaller\(\)[^]*herd\.textReset\(\)/);
 console.log('PASS: the menu source');

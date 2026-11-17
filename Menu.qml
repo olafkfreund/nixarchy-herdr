@@ -374,7 +374,7 @@ Item {
     // own shortcuts are off in the menu (pinnable is false), so these are the
     // only ones here.
     Shortcut {
-      sequences: ["Ctrl+=", "Ctrl++", "Ctrl+Shift+="]
+      sequences: ["Ctrl+=", "Ctrl++"]
       context: Qt.WindowShortcut
       onActivated: herd.textBigger()
     }

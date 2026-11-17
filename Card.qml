@@ -72,6 +72,9 @@ PanelKeyCatcher {
       var item = list.itemAtIndex(si)
       var agent = item ? item.agentRepeater.itemAt(ai) : null
       if (!agent) return
+      // A delegate made just now may not be laid out yet: lay it out first.
+      for (var p = agent.parent; p && p !== list.contentItem; p = p.parent)
+        if (typeof p.forceLayout === "function") p.forceLayout()
       var top = agent.mapToItem(list.contentItem, 0, 0).y
       list.contentY = card.scrollTarget(list.contentY, list.height, top, top + agent.height,
                                         list.originY, list.contentHeight)
@@ -95,7 +98,9 @@ PanelKeyCatcher {
 
   // The sheet is a picker that wants the keyboard, so the surface goes first.
   function openKeys() {
-    panel.close()
+    // A dropdown or the menu holds the keyboard, so it goes first; a pinned
+    // card stays where you put it.
+    if (!panel.pinned) panel.close()
     Quickshell.execDetached([Qt.resolvedUrl("bin/herdr-menu-keys").toString().replace(/^file:\/\//, "")])
   }
 
@@ -148,7 +153,7 @@ PanelKeyCatcher {
   Shortcut {
     enabled: panel.pinnable !== false
     context: Qt.WindowShortcut
-    sequences: ["Ctrl+=", "Ctrl++", "Ctrl+Shift+="]
+    sequences: ["Ctrl+=", "Ctrl++"]
     onActivated: panel.textBigger()
   }
   Shortcut {
@@ -654,12 +659,8 @@ PanelKeyCatcher {
 
             Behavior on opacity { NumberAnimation { duration: 80 } }
 
-            // hasCursor makes the button render its hover state for the
-            // keyboard too, so the cursor looks the same whether it got
-            // there by pointing or by pressing Right.
             PanelActionButton {
               Accessible.name: "Open session"
-              hasCursor: panel.cursorOnSession(row.index)
               iconText: panel.iconOpen
               tooltipText: row.modelData.windowAddress !== ""
                 ? "Focus this session" : "Open this session"
@@ -685,7 +686,6 @@ PanelKeyCatcher {
               PanelActionButton {
                 id: killButton
                 Accessible.name: "Kill server"
-                hasCursor: panel.cursorOnSession(row.index)
                 visible: row.modelData.running && row.modelData.kind !== "app"
                 iconText: panel.iconKill
                 tooltipText: "Kill this server"
@@ -698,7 +698,6 @@ PanelKeyCatcher {
 
               PanelActionButton {
                 Accessible.name: "Delete session"
-                hasCursor: panel.cursorOnSession(row.index)
                 visible: !row.modelData.running && !row.modelData.isDefault
                   && row.modelData.kind !== "app"
                 iconText: panel.iconTrash

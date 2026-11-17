@@ -41,7 +41,8 @@ for (const [t, want] of [['+', 'bigger'], ['=', 'bigger'], ['-', 'smaller'], ['0
 }
 assert.equal(key('?'), 'close,exec');
 assert.equal(calls[1][1][0], '/x/bin/herdr-menu-keys');
-assert.deepEqual(calls.find((c) => c[0] === 'pin') || [], []);
+assert.ok(!calls.some((c) => c[0] === 'pin'), '? never pins');
+panel.pinned = true; assert.equal(key('?'), 'exec', 'a pinned card stays open for ?'); panel.pinned = false;
 key('p'); assert.deepEqual(calls[0], ['pin', true]);
 panel.pinnable = false; assert.equal(key('p'), ''); panel.pinnable = true;
 
@@ -75,7 +76,11 @@ assert.ok(!/onTabRequested/.test(source));
 assert.ok(!/^\s*Keys\.onPressed/m.test(source), 'no Keys.onPressed on the catcher');
 assert.ok(/Accessible\.focused: panel\.cursorOnAgent\(/.test(source));
 assert.ok(/Accessible\.focused: panel\.cursorOnSession\(row\.index\) && !panel\.agentAt/.test(source));
-for (const n of ['Open session', 'Kill server', 'Delete session', 'Unpin']) assert.ok(source.includes(`"${n}"`), n);
+for (const n of ['Open session', 'Kill server', 'Delete session', 'Pin', 'Unpin'])
+  assert.match(source, new RegExp(`["']${n}["']`), n);
+assert.doesNotMatch(source, /hasCursor:/, 'no keyboard highlight on the row buttons (U5)');
+assert.doesNotMatch(source, /Ctrl\+Shift\+=/, 'no ambiguous Ctrl+Shift+= next to Ctrl++');
+assert.match(source, /forceLayout\(\)/, 'agent rows are laid out before their position is read');
 assert.equal((source.match(/enabled: panel\.pinnable !== false/g) || []).length, 3);
 assert.ok(/context: Qt\.WindowShortcut/.test(source));
 assert.ok(/ConfirmOverlay \{/.test(source) && !/ConfirmDialog \{/.test(source));

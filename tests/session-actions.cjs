@@ -10,7 +10,7 @@ const context = { root: { script: 'herdr-sessions' }, actionProc: {}, killProc: 
                   settleTimer: { restart() {} }, actionFinished() {},
                   confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false,
                   hcAvailable: true, blockedCount: 0, doneCount: 0, workingCount: 0,
-                  blinkTimer: { restart() {}, stop() {} } };
+                  blinkTimer: { restart() {}, stop() {} }, textMissing: false };
 const appMark = source.match(/readonly property bool appMark: (.+)/);
 assert.ok(appMark, 'Missing appMark property');
 Object.defineProperty(context, 'appMark', { get() { return vm.runInContext(appMark[1], context); } });

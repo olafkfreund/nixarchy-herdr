@@ -75,7 +75,7 @@ that does not answer never delays the rest. Nothing is installed on them.
 | --- | --- |
 | `↓` / `j` | Next row |
 | `↑` / `k` | Previous row |
-| `Enter` / `Space` | Jump to the agent, open the session, or press the button you are on |
+| `Enter` / `Space` | Jump to the agent, open the session, or start a stopped one |
 | `o` | Open the session under the cursor |
 | `x` or `K` | Destroy what the row allows: kill a running session's server, delete a stopped session, or end a desktop-app agent and its sub-agents; asks first, with Cancel selected |
 | `i` | Interrupt the desktop-app agent under the cursor |

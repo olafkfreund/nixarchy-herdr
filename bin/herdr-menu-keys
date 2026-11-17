@@ -24,7 +24,7 @@ UP  /  k                   → Previous row
 RETURN  /  SPACE           → Jump to the agent, open the session, or start a stopped one
 o                          → Open the session under the cursor
 x                          → Destroy what the row allows: kill, delete or end the agent (asks first)
-SHIFT + K                  → Same key job as x (same as x)
+SHIFT + K                  → Destroy, same as x
 i                          → Interrupt the desktop-app agent under the cursor
 +  /  -  /  0              → Text bigger, smaller, reset (not in an input line)
 CTRL + =  /  -  /  0       → Text size, also in an input line
