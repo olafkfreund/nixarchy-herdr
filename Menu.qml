@@ -105,6 +105,9 @@ Item {
   property string inputMode: ""
   readonly property bool inputOpen: inputMode !== ""
   property string newHost: ""
+  // What `n` was pressed on, captured with the host: "app" makes a space in
+  // the desktop app, anything else a session.
+  property string newKind: ""
   // The agent a prompt goes to, captured when `a` was pressed so a refresh
   // moving the cursor cannot redirect it.
   property var promptTarget: null
@@ -131,10 +134,13 @@ Item {
       var session = herd.sessionAt(herd.cursor)
       var agent = herd.agentAt(herd.cursor)
       if (!session || !agent) return
-      root.promptTarget = { host: String(session.host || ""), session: session.name,
+      root.promptTarget = { kind: session.kind === "app" ? "app" : "", host: String(session.host || ""),
+                            session: session.kind === "app" ? session.spaceId : session.name,
                             pane: agent.pane, title: herd.cleanTitle(agent.title) }
     } else {
+      var at = herd.sessionAt(herd.cursor)
       root.newHost = herd.hostAtCursor()
+      root.newKind = at && at.kind === "app" ? "app" : ""
     }
     root.promptReply = ""
     root.inputMode = mode
@@ -164,7 +170,9 @@ Item {
     var dir = words.length > 1 ? words.slice(1).join(" ") : ""
     if (name === "") { root.cancelInput(); return }
     // False means it did not start and the model says why; the line stays.
-    if (herd.newSession(root.newHost, name, dir)) root.newPending = true
+    var started = root.newKind === "app" ? herd.newAppSpace(root.newHost, name, dir)
+      : herd.newSession(root.newHost, name, dir)
+    if (started) root.newPending = true
   }
 
   // Only the model's `new` result matters here: a kill or a poll finishing
@@ -187,7 +195,8 @@ Item {
     if (!t) return "unknown"
     for (var i = 0; i < herd.sessions.length; i++) {
       var s = herd.sessions[i]
-      if (s.name !== t.session || String(s.host || "") !== t.host) continue
+      if ((s.kind === "app") !== (t.kind === "app")) continue
+      if ((t.kind === "app" ? s.spaceId : s.name) !== t.session || String(s.host || "") !== t.host) continue
       var agents = s.agentList || []
       for (var j = 0; j < agents.length; j++)
         if (agents[j].pane === t.pane) return agents[j].status
@@ -205,9 +214,17 @@ Item {
       return
     }
     var t = root.promptTarget
+    // Asked again here, not only when `a` was pressed: the subscription may
+    // have dropped while the text was being typed.
+    if (t.kind === "app" && herd.appRowNotLive({ kind: "app", host: t.host })) return
     var command = [herd.script]
-    if (t.host) command.push("--host", t.host)
-    command.push("prompt", t.session, t.pane)
+    if (t.kind === "app") {
+      command.push("app-prompt", t.pane)
+      if (confirmed === true) command.push("--force")
+    } else {
+      if (t.host) command.push("--host", t.host)
+      command.push("prompt", t.session, t.pane)
+    }
     // C1 controls (U+0080-U+009F) are two bytes in UTF-8, so the script's
     // byte-wise tr cannot catch them; a terminal still acts on them.
     text = text.replace(/[\u0080-\u009f]/g, "")
@@ -427,7 +444,8 @@ Item {
                 text: root.inputMode === "prompt" && root.promptTarget
                   ? (root.promptTarget.host ? root.promptTarget.host + " \u00b7 " : "")
                     + root.promptTarget.title
-                  : (root.newHost === "" ? "new session" : "new on " + root.newHost)
+                  : (root.newHost === "" ? (root.newKind === "app" ? "new space" : "new session")
+                     : "new on " + root.newHost)
                 textFormat: Text.PlainText
                 font.family: root.fontFamily
                 font.pixelSize: Math.round(Style.font.caption * root.textScale)

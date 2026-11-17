@@ -440,6 +440,11 @@ call the real tools.
 
    Verify: `node tests/session-actions.cjs`, then `omarchy plugin validate .`.
 
+   **Deviation (implementation):** the error line is built by a new
+   `errorLine()` in `HerdrModel.qml`, so its order is testable in node. Order:
+   `actionError`, `errorText`, `appError`, "Could not reach herdr.", then the
+   hidden-sessions note.
+
 5. **`tests/app-subscription.qml` and `tests/app-subscription.sh`: the QML
    wiring (R5).**
    - **Setup.**

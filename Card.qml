@@ -101,7 +101,8 @@ PanelKeyCatcher {
   }
   onTextKey: function(t) {
     // The letter keys stay about the server, wherever inside it the
-    // cursor happens to be: you kill a server, never an agent.
+    // cursor happens to be: you kill a server, never an agent. On a desktop
+    // app row there is no server to kill, so K and i act on the agent.
     var session = panel.sessionAt(panel.cursor)
     if (t === "o" && session) panel.openSession(session)
     else if (t === "K" && session) panel.askKill(session)
@@ -109,6 +110,7 @@ PanelKeyCatcher {
     else if (t === "r") panel.refresh()
     else if (t === "n") panel.requestNew()
     else if (t === "a") panel.requestPrompt()
+    else if (t === "i") panel.requestInterrupt()
   }
 
   Column {
@@ -207,16 +209,13 @@ PanelKeyCatcher {
       id: staleBox
       width: parent.width
       height: staleBox.visible ? staleWarning.implicitHeight + Style.space(6) : 0
-      visible: !panel.reachable || panel.actionError !== "" || panel.hiddenSessions > 0
+      visible: panel.errorLine() !== ""
 
       Text {
         id: staleWarning
         anchors.verticalCenter: parent.verticalCenter
         width: parent.width
-        text: panel.actionError !== "" ? panel.actionError
-          : (panel.errorText !== "" ? panel.errorText
-             : (!panel.reachable ? "Could not reach herdr."
-                : panel.hiddenSessions + " sessions not shown"))
+        text: panel.errorLine()
         textFormat: Text.PlainText
         elide: Text.ElideRight
         font.family: panel.fontFamily
@@ -404,7 +403,7 @@ PanelKeyCatcher {
                 Accessible.name: panel.cleanTitle(agentRow.modelData.title)
                                  + (panel.agentPlace(agentRow.modelData)
                                     ? ", " + panel.agentPlace(agentRow.modelData) : "")
-                                 + ", " + panel.agentNote(agentRow.modelData.status)
+                                 + ", " + panel.agentNote(agentRow.modelData.status, agentRow.modelData.kind)
                 width: agentColumn.width
 
                 // The slack around the text, on both sides of it. It used to
@@ -555,8 +554,8 @@ PanelKeyCatcher {
                   anchors.right: parent.right
                   anchors.top: parent.top
                   anchors.topMargin: agentRow.pad
-                  visible: panel.agentNote(agentRow.modelData.status) !== ""
-                  text: panel.agentNote(agentRow.modelData.status)
+                  visible: panel.agentNote(agentRow.modelData.status, agentRow.modelData.kind) !== ""
+                  text: panel.agentNote(agentRow.modelData.status, agentRow.modelData.kind)
                   textFormat: Text.PlainText
                   font.family: panel.fontFamily
                   font.pixelSize: Math.round(Style.font.caption * card.panel.textScale)
@@ -631,7 +630,7 @@ PanelKeyCatcher {
                 id: killButton
                 hasCursor: panel.cursorOnSession(row.index)
                   && panel.column === panel.columnDestroy
-                visible: row.modelData.running
+                visible: row.modelData.running && row.modelData.kind !== "app"
                 iconText: panel.iconKill
                 tooltipText: "Kill this server"
                 foreground: Qt.darker(panel.foreground, 1.4)
@@ -645,6 +644,7 @@ PanelKeyCatcher {
                 hasCursor: panel.cursorOnSession(row.index)
                   && panel.column === panel.columnDestroy
                 visible: !row.modelData.running && !row.modelData.isDefault
+                  && row.modelData.kind !== "app"
                 iconText: panel.iconTrash
                 tooltipText: "Delete this session"
                 foreground: Qt.darker(panel.foreground, 1.4)

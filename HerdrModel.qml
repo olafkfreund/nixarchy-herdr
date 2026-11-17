@@ -948,6 +948,16 @@ Item {
   // The bar shows a bare number, which says nothing about what it counts. The
   // tooltip is where that gets spelled out, and where a herd that wants
   // something says so before the panel is even open.
+  // One line under the title, most specific first: what you just pressed, then
+  // the list failing, then the desktop app failing, then what was left out.
+  function errorLine() {
+    if (actionError !== "") return actionError
+    if (errorText !== "") return errorText
+    if (appError !== "") return appError
+    if (!reachable) return "Could not reach herdr."
+    return hiddenSessions > 0 ? hiddenSessions + " sessions not shown" : ""
+  }
+
   function tooltipText() {
     if (!reachable) return "Herdr: " + (errorText || "could not reach herdr")
     var parts = [runningCount + (runningCount === 1 ? " herdr server" : " herdr servers"),
