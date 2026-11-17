@@ -343,7 +343,7 @@ app_merge_jq=$(cat <<'JQ'
           else (($first.labels.where // "") | if contains(" / ") then split(" / ")[:-1] | join(" / ") else "space" end) end),
          host: $first.machine, spaceId: $first.spaceId, running:true, readable:true,
          stale:false, agents: ($shown | length),
-         blocked: ([$shown[] | select(.status == "blocked")] | length),
+         blocked: ([$shown[] | select(.status == "blocked" or .status == "error")] | length),
          done: ([$shown[] | select(.status == "done")] | length),
          working: ([$shown[] | select(.status == "working")] | length),
          hiddenAgents: (($group | length) - ($shown | length)),

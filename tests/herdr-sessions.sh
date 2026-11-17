@@ -945,6 +945,8 @@ FAKE_HC_SNAPSHOT=$(jq -c '.terminals += [
    title:"duplicate",argv:[],status_ms:11},
   {address:"razer/t6",state:"live",status:{state:"idle",kind:null},parent:"t1",
    die_with_parent:true,labels:{},title:"remote orphan",argv:[],status_ms:12},
+  {address:"razer/t4",state:"live",status:{state:"error",kind:null},parent:null,
+   die_with_parent:false,labels:{"herdr.space":"sp2"},title:"remote error",argv:[],status_ms:14},
   {address:"t0",state:"live",status:null,parent:"t2",die_with_parent:true,
    labels:{},title:"child shell",argv:[],status_ms:0},
   {address:"t8",state:"live",status:{state:"working",kind:null},parent:"t0",
@@ -954,9 +956,24 @@ out=$("$script" app-list --remote)
 check "60 duplicate names and deep cascade" jq -e '
   ([.sessions[] | select(.host == "" and .name == "renamed / Team")] | length) == 2 and
   ([.sessions[] | select(.host == "" and .spaceId == "sp2")][0].agentList[0].status == "error") and
+  ([.sessions[] | select(.host == "razer" and .spaceId == "sp2")][0].agentList[0].pane == "razer/t4") and
   ([.sessions[] | select(.host == "razer" and .spaceId == "_background")][0].agentList[0].pane == "razer/t6") and
   ([.sessions[].agentList[] | select(.pane == "t2")][0].cascadeKey == "t0,t3,t8")' <<<"$out" ||
   printf '  got: %.500s\n' "$out"
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 closed error counts as blocked without remote" jq -e '
+  .windowOpen == false and ([.sessions[].blocked] | add) == 2 and
+  ([.sessions[] | select(.spaceId == "sp2")][0] |
+   .blocked == 1 and .agentList[0].status == "error") and
+  ([.sessions[].agentList[].pane] | index("razer/t4")) == null and
+  ([.sessions[].host] | all(. == ""))' <<<"$out"
+out=$(FAKE_APP_LS='{"spaces":[{"id":"sp2","machine":null,"tabs":[{"terminals":[{"terminal":"t6","status":"blocked"}]}]}]}' \
+  "$script" app-list)
+check "60 open error reported blocked counts as blocked without remote" jq -e '
+  .windowOpen == true and ([.sessions[].blocked] | add) == 2 and
+  ([.sessions[] | select(.spaceId == "sp2")][0] |
+   .blocked == 1 and .agentList[0].status == "blocked") and
+  ([.sessions[].agentList[].pane] | index("razer/t4")) == null' <<<"$out"
 FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2") | .labels.where) = "new / Tab"' \
   <<<"$FAKE_HC_SNAPSHOT")
 out=$("$script" app-list)
