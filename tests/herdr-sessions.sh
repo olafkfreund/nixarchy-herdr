@@ -1122,7 +1122,7 @@ check "73 changed cascade" jq -e '.ok == false and .changed and .cascadeKey == "
 check "73 stale key never kills" test -z "$(grep -E '^hc-call kill$' "$FAKE_LOG")"
 out=$("$script" app-kill t1 t2)
 check "73 current key kills" jq -e '.ok == true' <<<"$out"
-check "73 kill reached hc" grep -qE '^hc-call kill$' "$FAKE_LOG"
+check "73 kill reached hc" grep -Eq '^hc-call kill$' "$FAKE_LOG"
 
 reset
 for addr in '-' 't' 'foo!/t1' 'razer/t1234567890' 'razer/t1/extra'; do
@@ -1143,15 +1143,15 @@ out=$(umask 022; "$script" app-focus t1)
 check "75 start and focus" jq -e '.ok == true' <<<"$out"
 check "75 started window survives cleanup" test -f "$FAKE_APP_PID_FILE" &&
   check "75 started window alive" kill -0 "$(cat "$FAKE_APP_PID_FILE")"
-check "75 focused by address" grep -qE "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
-check "75 app focus call" grep -qE '^app-call agent.focus$' "$FAKE_LOG"
+check "75 focused by address" grep -Eq "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+check "75 app focus call" grep -Eq '^app-call agent.focus$' "$FAKE_LOG"
 
 reset
 FAKE_APP_LS_FAIL=refused FAKE_APP_DO_ERROR_ONCE='Connection refused'
 export FAKE_APP_LS_FAIL FAKE_APP_DO_ERROR_ONCE
 out=$("$script" app-focus t1)
 check "75 startup focus retries" jq -e '.ok == true' <<<"$out"
-check "75 focus attempted twice" test "$(grep -cE '^app-call agent.focus$' "$FAKE_LOG")" = 2
+check "75 focus attempted twice" test "$(grep -Ec '^app-call agent.focus$' "$FAKE_LOG")" = 2
 
 reset
 # Only the fakes and the tools the script needs: no real uwsm-app, hc or
@@ -1175,7 +1175,7 @@ export FAKE_APP_PIDS FAKE_APP_LS_FAIL=refused
 out=$("$script" app-focus t1)
 stop_bg
 check "76 CLI-only app is not a window" jq -e '.ok == true' <<<"$out"
-check "76 CLI-only starts window" grep -qE "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+check "76 CLI-only starts window" grep -Eq "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
 
 reset
 fake_client herdr-app window
