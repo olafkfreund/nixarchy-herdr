@@ -26,7 +26,8 @@ TAB  /  SHIFT + TAB        → Cycle through the row's buttons
 ── Act ───────────────────────────
 RETURN  /  SPACE           → Jump to the agent, open the session, or press the button
 o                          → Open the session under the cursor
-SHIFT + K                  → Kill that session's server (asks first)
+SHIFT + K                  → Kill that session's server, or a desktop-app agent (asks first)
+i                          → Interrupt the desktop-app agent under the cursor
 x                          → Delete a stopped session (asks first)
 r                          → Refresh
 ESCAPE                     → Close

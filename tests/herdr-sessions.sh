@@ -20,6 +20,9 @@ stop_bg() {
   # The child first: killing its bash alone would leave the sleep behind.
   for p in "${bg[@]}"; do pkill -P "$p"; kill "$p"; wait "$p"; done 2>/dev/null
   bg=()
+  if [[ -f ${FAKE_APP_PID_FILE-} ]]; then
+    kill "$(cat "$FAKE_APP_PID_FILE")" 2>/dev/null || true
+  fi
 }
 trap 'stop_bg; rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/home" "$tmp/run"
@@ -29,6 +32,11 @@ export HOME="$tmp/home" XDG_RUNTIME_DIR="$tmp/run" XDG_CACHE_HOME="$tmp/home/.ca
 export PATH="$tmp/bin:$PATH"
 export FAKE_LOG="$tmp/log" FAKE_CLIENTS="$tmp/clients"
 export FAKE_PROC_DIR="$tmp/proc" FAKE_KILL_LOG="$tmp/kill-log"
+export FAKE_HC_ARGS="$tmp/hc-args" FAKE_APP_ARGS="$tmp/app-args"
+export FAKE_APP_PID_FILE="$tmp/app-pid" FAKE_APP_OPEN="$tmp/app-open"
+export FAKE_APP_ERROR_ONCE_FILE="$tmp/app-error-once"
+export FAKE_REAL_PGREP
+FAKE_REAL_PGREP=$(command -v pgrep)
 # Anything herdr set in the calling shell is not the fake's business.
 for var in ${!HERDR_@}; do unset "$var"; done
 
@@ -104,15 +112,85 @@ FAKE
 cat > "$tmp/bin/hyprctl" <<'FAKE'
 #!/bin/sh
 if [ "$1" = clients ]; then
+  [ -z "${FAKE_CLIENTS_FAIL-}" ] || exit 1
   sleep "${FAKE_CLIENTS_SLEEP:-0}"
   cat "$FAKE_CLIENTS"
 elif [ "$1" = dispatch ]; then
+  printf 'dispatch %s\n' "$2" >> "$FAKE_LOG"
   exit "${FAKE_DISPATCH_RC:-0}"
 else echo "[]"; fi
 FAKE
 cat > "$tmp/bin/ss" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "${FAKE_SS_LINES-}"
+FAKE
+cat > "$tmp/bin/hc" <<'FAKE'
+#!/bin/bash
+printf 'hc-pid %s %s\n' "$$" "$*" >> "$FAKE_LOG"
+if [[ $1 != events && $1 != machine ]]; then
+  printf 'hc-call %s\n' "$1" >> "$FAKE_LOG"
+  printf '%s\0' "$@" > "$FAKE_HC_ARGS.$1"
+  if [[ $1 == send && -n ${FAKE_HC_SEND_SLEEP-} ]]; then exec sleep "$FAKE_HC_SEND_SLEEP"; fi
+  if [[ $1 == read && -n ${FAKE_HC_READ_SLEEP-} ]]; then exec sleep "$FAKE_HC_READ_SLEEP"; fi
+  cmd=${1^^}
+  rc_var="FAKE_HC_${cmd}_RC"
+  out_var="FAKE_HC_${cmd}_OUT"
+  if [[ ${!rc_var:-0} != 0 ]]; then
+    printf '{"error":{"kind":"blocked","message":"hc %s refused","hint":"retry"}}\n' "$1" >&2
+    exit "${!rc_var}"
+  fi
+  printf '%s\n' "${!out_var-}"
+  exit
+fi
+case "$1 $2" in
+  'events --json')
+    if [[ -n ${FAKE_HC_SNAPSHOT_BYTES-} ]]; then
+      head -c "$FAKE_HC_SNAPSHOT_BYTES" /dev/zero | tr '\0' x
+      printf '\n'
+    else printf '%s\n' "$FAKE_HC_SNAPSHOT"; fi
+    # An idle core sends nothing after the snapshot (a heartbeat is 15 s apart).
+    [[ -z ${FAKE_HC_IDLE-} ]] || exec sleep 30
+    while :; do printf '{"heartbeat":true}\n'; sleep 0.2; done ;;
+  'machine ls') printf '%s\n' "$FAKE_HC_MACHINES" ;;
+  *) exit 1 ;;
+esac
+FAKE
+cat > "$tmp/bin/herdr-app" <<'FAKE'
+#!/bin/bash
+if [[ $# == 0 ]]; then
+  printf '%s\n' "$$" > "$FAKE_APP_PID_FILE"
+  jq -n --argjson pid "$$" '[{pid:$pid,address:"0x99",workspace:{name:"1"}}]' > "$FAKE_CLIENTS"
+  : > "$FAKE_APP_OPEN"
+  exec sleep 30
+fi
+if [[ $1 == do ]]; then
+  printf 'app-call %s\n' "$2" >> "$FAKE_LOG"
+  printf '%s\0' "$@" > "$FAKE_APP_ARGS.$2"
+  if [[ -n ${FAKE_APP_DO_ERROR_ONCE-} && ! -e $FAKE_APP_ERROR_ONCE_FILE ]]; then
+    : > "$FAKE_APP_ERROR_ONCE_FILE"
+    printf '{"error":"%s"}\n' "$FAKE_APP_DO_ERROR_ONCE"
+    exit 1
+  fi
+  if [[ -n ${FAKE_APP_DO_ERROR-} ]]; then
+    printf '{"error":"%s"}\n' "$FAKE_APP_DO_ERROR"
+    exit 1
+  fi
+  printf '{"id":"sp1"}\n'
+  exit
+fi
+if [[ -e $FAKE_APP_OPEN ]]; then printf '%s\n' "$FAKE_APP_LS"; exit; fi
+case ${FAKE_APP_LS_FAIL-} in
+  refused) echo 'Connection refused' >&2; exit 1 ;;
+  other) echo 'unexpected failure' >&2; exit 1 ;;
+esac
+printf '%s\n' "$FAKE_APP_LS"
+FAKE
+cat > "$tmp/bin/pgrep" <<'FAKE'
+#!/bin/bash
+if [[ $1 == -x && ${2-} == herdr-app ]]; then
+  [[ -z ${FAKE_APP_PIDS-} ]] || printf '%s\n' "$FAKE_APP_PIDS"
+  [[ ! -f $FAKE_APP_PID_FILE ]] || cat "$FAKE_APP_PID_FILE"
+else exec "$FAKE_REAL_PGREP" "$@"; fi
 FAKE
 cat > "$tmp/bin/kill" <<'FAKE'
 #!/bin/bash
@@ -152,7 +230,7 @@ FAKE
 # The launcher tries the desktop's terminal first (#18), so it is faked as
 # well: a test must never open a real window. Same knob as foot.
 cp "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
-chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/kill" \
+chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/hc" "$tmp/bin/herdr-app" "$tmp/bin/pgrep" "$tmp/bin/kill" \
   "$tmp/bin/setsid" "$tmp/bin/uwsm-app" "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
 
 failed=0
@@ -165,6 +243,11 @@ check() {
 
 # Each case starts with a clean log and the fake's defaults.
 reset() {
+  if [[ -f $FAKE_APP_PID_FILE ]]; then
+    kill "$(cat "$FAKE_APP_PID_FILE")" 2>/dev/null || true
+  fi
+  rm -f -- "$FAKE_APP_PID_FILE" "$FAKE_APP_OPEN" "$FAKE_APP_ERROR_ONCE_FILE" \
+    "$FAKE_HC_ARGS".* "$FAKE_APP_ARGS".*
   : > "$FAKE_LOG"
   : > "$FAKE_KILL_LOG"
   echo "[]" > "$FAKE_CLIENTS"
@@ -175,7 +258,20 @@ reset() {
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
     FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE \
     FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC \
-    FAKE_TERM_SLEEP
+    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON \
+    FAKE_HC_SEND_OUT FAKE_HC_SEND_RC FAKE_HC_SEND_SLEEP FAKE_HC_READ_OUT FAKE_HC_READ_RC \
+    FAKE_HC_INTERRUPT_OUT FAKE_HC_INTERRUPT_RC FAKE_HC_KILL_OUT FAKE_HC_KILL_RC \
+    FAKE_APP_DO_ERROR FAKE_APP_DO_ERROR_ONCE FAKE_APP_PIDS \
+    FAKE_HC_IDLE FAKE_HC_READ_SLEEP FAKE_CLIENTS_FAIL
+  mkdir -p "$HOME/.config/herdr-app"
+  rm -f -- "$HOME/.config/herdr-app/view.json"
+  export FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[]}'
+  export FAKE_HC_MACHINES='{"machines":[]}'
+  export FAKE_APP_LS='{"spaces":[]}'
+  export FAKE_HC_SEND_OUT='{"started":true,"status":"working","turn":1,"wait":{"reason":"status","ended":true,"status":"idle","exit_code":0}}'
+  export FAKE_HC_READ_OUT='screen'
+  export FAKE_HC_INTERRUPT_OUT='{"key":"t1","outcome":"stopped"}'
+  export FAKE_HC_KILL_OUT='{}'
   local var
   for var in ${!FAKE_SNAPSHOT_BODY_@} ${!FAKE_SNAPSHOT_SLEEP_@}; do unset "$var"; done
 }
@@ -784,5 +880,361 @@ check "58 run directory removed" test -z \
 surviving=$(awk '$1 == "snapshot-pid" { print $3 }' "$FAKE_LOG" |
   while read -r child; do kill -0 "$child" 2>/dev/null && printf '%s\n' "$child"; done)
 check "58 no snapshot child left" test -z "$surviving"
+
+# App rows come from hc's snapshot. Shells can carry a space label and be
+# killed with a parent, but do not become agents without a live status.
+reset
+FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[
+  {"address":"t1","state":"live","status":null,"parent":null,"die_with_parent":false,"labels":{"herdr.space":"sp1","where":"renamed / Team / Work"},"title":"shell","argv":[],"status_ms":0},
+  {"address":"t2","state":"live","status":{"state":"done","kind":null},"parent":"t1","die_with_parent":true,"labels":{"where":"renamed / Team / Work"},"title":"agent","argv":[],"status_ms":5},
+  {"address":"t3","state":"live","status":{"state":"blocked","kind":"question"},"parent":"t2","die_with_parent":true,"labels":{},"title":"child","argv":[],"status_ms":6},
+  {"address":"t4","state":"live","status":{"state":"working","kind":null},"parent":"t2","die_with_parent":false,"labels":{},"title":"other","argv":[],"status_ms":7},
+  {"address":"razer/t2","state":"live","status":{"state":"working","kind":null},"parent":"t1","die_with_parent":true,"labels":{"herdr.space":"sp1","where":"remote / Tab"},"title":"remote","argv":[],"status_ms":8},
+  {"address":"razer/t1","state":"finished","status":{"state":"done","kind":null},"parent":null,"die_with_parent":false,"labels":{},"title":"old","argv":[],"status_ms":9},
+  {"address":"t5","state":"live","status":{"state":"idle","kind":null},"parent":"missing","die_with_parent":true,"labels":{},"title":"orphan","argv":[],"status_ms":10}]}'
+FAKE_HC_SNAPSHOT=$(printf '%s' "$FAKE_HC_SNAPSHOT" | jq -c .)
+export FAKE_APP_LS='{"spaces":[{"id":"sp1","name":"new","machine":null,"tabs":[{"id":"tb1","name":"Work","terminals":[{"terminal":"t2","pane":"p1","status":"idle"}]}]}]}'
+export FAKE_HC_MACHINES='{"machines":[{"name":"razer","state":"connected"}]}'
+printf '{"attention":{"t2":{"word":"done","seen":true}}}' > "$HOME/.config/herdr-app/view.json"
+out=$("$script" app-list)
+check "59 app grouping and cascade" jq -e '
+  .ok and .windowOpen == true and .machines == [] and (.sessions | length) == 2 and
+  (.sessions | all(.host == "")) and
+  ([.sessions[].agentList[].pane] | sort) == ["t2","t3","t4","t5"] and
+  (.sessions[] | select(.spaceId == "sp1") | .name == "renamed / Team" and
+   .agentList[0].tab == "Work" and .agentList[0].status == "idle" and
+   .agentList[0].cascadeKey == "t3" and .agentList[0].cascade[0].title == "child") and
+  (.sessions[] | select(.spaceId == "_background") | .name == "background")' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+check "59 producer stopped" test -z "$(awk '$1 == "hc-pid" && $3 == "events" {print $2}' "$FAKE_LOG" |
+  while read -r child; do kill -0 "$child" 2>/dev/null && printf '%s\n' "$child"; done)"
+out=$("$script" app-list --remote)
+check "60 app remote and machines" jq -e '
+  .machines == [{"name":"razer","state":"connected"}] and
+  ([.sessions[].host] | index("razer")) != null and
+  ([.sessions[].agentList[].pane] | unique | length) == 5 and
+  (.sessions[] | select(.host == "razer") | .spaceId == "sp1")' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 seen done falls back to idle" jq -e '
+  .windowOpen == false and
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+FAKE_HC_SNAPSHOT=$(jq -c '.terminals += [
+  {address:"t6",state:"live",status:{state:"error",kind:null},parent:null,
+   die_with_parent:false,labels:{"herdr.space":"sp2","where":"renamed / Team / Work"},
+   title:"duplicate",argv:[],status_ms:11},
+  {address:"razer/t6",state:"live",status:{state:"idle",kind:null},parent:"t1",
+   die_with_parent:true,labels:{},title:"remote orphan",argv:[],status_ms:12},
+  {address:"t0",state:"live",status:null,parent:"t2",die_with_parent:true,
+   labels:{},title:"child shell",argv:[],status_ms:0},
+  {address:"t8",state:"live",status:{state:"working",kind:null},parent:"t0",
+   die_with_parent:true,labels:{},title:"great grandchild",argv:[],status_ms:13}]' \
+  <<<"$FAKE_HC_SNAPSHOT")
+out=$("$script" app-list --remote)
+check "60 duplicate names and deep cascade" jq -e '
+  ([.sessions[] | select(.host == "" and .name == "renamed / Team")] | length) == 2 and
+  ([.sessions[] | select(.host == "" and .spaceId == "sp2")][0].agentList[0].status == "error") and
+  ([.sessions[] | select(.host == "razer" and .spaceId == "_background")][0].agentList[0].pane == "razer/t6") and
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].cascadeKey == "t0,t3,t8")' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t1") | .labels.where) = "new / Tab"' \
+  <<<"$FAKE_HC_SNAPSHOT")
+out=$("$script" app-list)
+check "60 rename preserves space identity" jq -e '
+  ([.sessions[] | select(.spaceId == "sp1")][0] |
+   .name == "new" and .agentList[0].pane == "t2")' <<<"$out"
+
+reset
+FAKE_HC_SNAPSHOT=$(jq -nc '
+  {seq:1, terminals:
+    ([range(500) | {address: ("t" + (tostring | ("000" + .)[-3:])),
+      state:"live", status:{state:"working",kind:null}, parent:null,
+      die_with_parent:false, labels:{"herdr.space":"sp","where":"many / Tab"},
+      title:"agent", argv:[], status_ms:1}]
+     + [{address:"tzz",state:"live",status:{state:"working",kind:null},
+         parent:"t000",die_with_parent:true,labels:{"herdr.space":"sp","where":"many / Tab"},
+         title:"tail",argv:[],status_ms:1}])}')
+out=$("$script" app-list)
+check "60 cap keeps hidden descendant in cascade" jq -e '
+  .sessions[0].agents == 500 and .sessions[0].working == 500 and
+  .sessions[0].hiddenAgents == 1 and
+  .sessions[0].agentList[0].cascadeKey == "tzz"' <<<"$out" ||
+  printf '  got: %.500s\n' "$out"
+
+reset
+export FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[]}'
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "61 closed window" jq -e '.windowOpen == false' <<<"$out"
+out=$(FAKE_APP_LS_FAIL=other "$script" app-list)
+check "62 uncertain window" jq -e '.windowOpen == null' <<<"$out"
+out=$(FAKE_HC_SNAPSHOT='bad' "$script" app-list)
+check "63 malformed snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
+out=$(FAKE_HC_SNAPSHOT_BYTES=8388610 "$script" app-list)
+check "64 oversized snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
+
+mkdir -p "$tmp/only-jq"
+ln -s "$(command -v jq)" "$tmp/only-jq/jq"
+ln -s "$(command -v cat)" "$tmp/only-jq/cat"
+ln -s "$(command -v readlink)" "$tmp/only-jq/readlink"
+out=$(PATH="$tmp/only-jq" "$script" list)
+check "65 classic list without herdr" jq -e '.ok == true and .sessions == []' <<<"$out"
+out=$(PATH="$tmp/only-jq" "$script" app-list)
+check "66 app list without hc" jq -e '.error == "could not read herdr-core"' <<<"$out"
+"$script" demo on >/dev/null
+out=$("$script" app-list)
+check "67 app demo" jq -e '.sessions[0].kind == "app" and .sessions[0].agentList[0].pane == "t1"' <<<"$out"
+"$script" demo off >/dev/null
+
+reset
+out=$(printf '%s' $'-first\nsecond' | "$script" app-prompt t1 --force)
+mapfile -d '' -t send_args < "$FAKE_HC_ARGS.send"
+check "68 prompt keeps text and force" test "${send_args[0]} ${send_args[1]} ${send_args[2]} ${send_args[3]} ${send_args[4]}" = \
+  'send --json --wait --force --'
+check "68 prompt text is one argument" test "${send_args[5]}" = t1 &&
+  check "68 prompt multiline intact" test "${send_args[6]}" = $'-first\nsecond'
+check "68 prompt maps status and read" jq -e '.ok and .status == "idle" and .output == "screen\n"' <<<"$out"
+out=$(printf hi | "$script" app-prompt razer/t1)
+mapfile -d '' -t send_args < "$FAKE_HC_ARGS.send"
+check "69 prompt without force" test "${send_args[3]}" = --
+check "69 remote address through hc" test "${send_args[4]}" = razer/t1
+
+for reason in status exit timeout output not_started; do
+  reset
+  FAKE_HC_SEND_OUT=$(jq -nc --arg reason "$reason" \
+    '{started:true,status:"working",turn:1,wait:{reason:$reason,ended:true,status:"blocked",exit_code:0}}')
+  out=$(printf hi | "$script" app-prompt t1)
+  if [[ $reason == not_started ]]; then
+    check "70 $reason" jq -e '.ok == false and .error == "the agent did not start the turn"' <<<"$out"
+  else
+    want=$reason
+    [[ $reason != status && $reason != exit ]] || want=blocked
+    # shellcheck disable=SC2016 # $want is a jq variable
+    check "70 $reason" jq -e --arg want "$want" '.ok and .status == $want' <<<"$out"
+  fi
+done
+
+for outcome in stopped exited still_working unknown; do
+  reset
+  FAKE_HC_INTERRUPT_OUT=$(jq -nc --arg outcome "$outcome" '{key:"t1",outcome:$outcome}')
+  out=$("$script" app-interrupt t1)
+  case $outcome in
+    still_working) want='still working' ;;
+    unknown) want="it doesn't report status" ;;
+    *) want='' ;;
+  esac
+  # shellcheck disable=SC2016 # $note is a jq variable
+  check "71 interrupt $outcome" jq -e --arg note "$want" '.ok and (.note // "") == $note' <<<"$out"
+done
+
+for rc in 3 9 11 124; do
+  reset
+  out=$(printf hi | FAKE_HC_SEND_RC=$rc "$script" app-prompt t1)
+  if [[ $rc == 124 ]]; then want='timed out: prompt'; else want='hc send refused'; fi
+  # shellcheck disable=SC2016 # $want is a jq variable
+  check "72 hc exit $rc" jq -e --arg want "$want" '.error == $want' <<<"$out"
+done
+
+reset
+FAKE_HC_SEND_SLEEP=30 "$script" app-prompt t1 <<<hi >/dev/null &
+prompt_script_pid=$!
+send_pid=""
+for ((i = 0; i < 50; i++)); do
+  send_pid=$(awk '$1 == "hc-pid" && $3 == "send" {print $2; exit}' "$FAKE_LOG")
+  [[ -n $send_pid ]] && break
+  sleep 0.05
+done
+kill -TERM "$prompt_script_pid" 2>/dev/null || true
+wait "$prompt_script_pid" 2>/dev/null || true
+check "72 cancelled hc send stopped" test -n "$send_pid" &&
+  check "72 cancelled hc child gone" test ! -e "/proc/$send_pid"
+
+reset
+FAKE_HC_SNAPSHOT=$(jq -nc '{seq:1,terminals:[
+  {address:"t1",state:"live",status:{state:"idle",kind:null},parent:null,
+   die_with_parent:false,labels:{"herdr.space":"sp"},title:"root",argv:[],status_ms:1},
+  {address:"t2",state:"live",status:null,parent:"t1",die_with_parent:true,
+   labels:{},title:"child",argv:[],status_ms:0}]}')
+out=$("$script" app-kill t1 '')
+check "73 changed cascade" jq -e '.ok == false and .changed and .cascadeKey == "t2" and .cascade[0].title == "child"' <<<"$out"
+check "73 stale key never kills" test -z "$(rg '^hc-call kill$' "$FAKE_LOG")"
+out=$("$script" app-kill t1 t2)
+check "73 current key kills" jq -e '.ok == true' <<<"$out"
+check "73 kill reached hc" rg -q '^hc-call kill$' "$FAKE_LOG"
+
+reset
+for addr in '-' 't' 'foo!/t1' 'razer/t1234567890' 'razer/t1/extra'; do
+  out=$("$script" app-interrupt "$addr")
+  check "74 invalid address $addr" jq -e '.ok == false' <<<"$out"
+done
+out=$("$script" app-kill t1 't2,')
+check "74 invalid cascade key" jq -e '.ok == false' <<<"$out"
+out=$("$script" app-kill t1)
+check "74 missing cascade key" jq -e '.ok == false' <<<"$out"
+out=$("$script" --host razer app-interrupt t1)
+check "74 app commands are local" jq -e '.ok == false and (.error | contains("locally"))' <<<"$out"
+
+reset
+FAKE_APP_LS_FAIL=refused
+export FAKE_APP_LS_FAIL
+out=$(umask 022; "$script" app-focus t1)
+check "75 start and focus" jq -e '.ok == true' <<<"$out"
+check "75 started window survives cleanup" test -f "$FAKE_APP_PID_FILE" &&
+  check "75 started window alive" kill -0 "$(cat "$FAKE_APP_PID_FILE")"
+check "75 focused by address" rg -q "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+check "75 app focus call" rg -q '^app-call agent.focus$' "$FAKE_LOG"
+
+reset
+FAKE_APP_LS_FAIL=refused FAKE_APP_DO_ERROR_ONCE='Connection refused'
+export FAKE_APP_LS_FAIL FAKE_APP_DO_ERROR_ONCE
+out=$("$script" app-focus t1)
+check "75 startup focus retries" jq -e '.ok == true' <<<"$out"
+check "75 focus attempted twice" test "$(rg -c '^app-call agent.focus$' "$FAKE_LOG")" = 2
+
+reset
+# Only the fakes and the tools the script needs: no real uwsm-app, hc or
+# herdr-app can be found.
+mkdir -p "$tmp/bin-no-uwsm"
+for t in hc herdr-app hyprctl pgrep setsid; do ln -sf "$tmp/bin/$t" "$tmp/bin-no-uwsm/$t"; done
+for t in bash jq cat head tail tr wc sleep timeout rm mkdir mktemp stat chmod env readlink dirname \
+  basename sort ln cp mv grep sed awk find date id mkfifo sync uname; do
+  p=$(command -v "$t") && ln -sf "$p" "$tmp/bin-no-uwsm/$t"
+done
+FAKE_APP_LS_FAIL=refused
+export FAKE_APP_LS_FAIL
+out=$(PATH="$tmp/bin-no-uwsm" "$script" app-focus t1)
+check "75 starts without uwsm" jq -e '.ok == true' <<<"$out"
+check "75 no uwsm wrapper" test -z "$(rg '^uwsm-launched$' "$FAKE_LOG")"
+
+reset
+fake_client herdr-app cli
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS FAKE_APP_LS_FAIL=refused
+out=$("$script" app-focus t1)
+stop_bg
+check "76 CLI-only app is not a window" jq -e '.ok == true' <<<"$out"
+check "76 CLI-only starts window" rg -q "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+
+reset
+fake_client herdr-app window
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS
+fake_windows "${bg[-1]}" 2
+out=$("$script" app-focus t1)
+stop_bg
+check "77 two windows refused" jq -e '.error == "more than one herdr-app window"' <<<"$out"
+check "77 no focus action" test -z "$(rg '^app-call agent.focus$' "$FAKE_LOG")"
+
+reset
+fake_client herdr-app window
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS
+fake_windows "${bg[-1]}" 1
+FAKE_APP_DO_ERROR='app says no'
+export FAKE_APP_DO_ERROR
+out=$("$script" app-focus t1)
+stop_bg
+check "78 app error decoded" jq -e '.error == "app says no"' <<<"$out"
+
+reset
+fake_client herdr-app window
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS
+fake_windows "${bg[-1]}" 1
+out=$("$script" app-new alpha /tmp razer)
+mapfile -d '' -t app_args < "$FAKE_APP_ARGS.space.new"
+check "79 new all arguments" test "${app_args[*]}" = 'do space.new --name alpha --folder /tmp --machine razer'
+check "79 new succeeded" jq -e '.ok == true' <<<"$out"
+out=$("$script" app-new alpha '' razer)
+mapfile -d '' -t app_args < "$FAKE_APP_ARGS.space.new"
+check "79 new empty dir" test "${app_args[*]}" = 'do space.new --name alpha --machine razer'
+out=$("$script" app-new alpha /tmp '')
+mapfile -d '' -t app_args < "$FAKE_APP_ARGS.space.new"
+check "79 new empty machine" test "${app_args[*]}" = 'do space.new --name alpha --folder /tmp'
+stop_bg
+
+for args in 'bad/name||' 'ok|relative|' 'ok||bad/name'; do
+  IFS='|' read -r name dir machine <<< "$args"
+  out=$("$script" app-new "$name" "$dir" "$machine")
+  check "80 new invalid $args" jq -e '.ok == false' <<<"$out"
+done
+out=$("$script" app-new alpha /tmp)
+check "80 new requires three arguments" jq -e '.ok == false' <<<"$out"
+
+reset
+"$script" demo on >/dev/null
+for action in 'app-focus t1' 'app-prompt t1' 'app-interrupt t1' 'app-kill t1 t2' 'app-new alpha /tmp razer'; do
+  read -r -a words <<< "$action"
+  out=$("$script" "${words[@]}")
+  check "81 demo $action" jq -e '.ok == true' <<<"$out"
+done
+check "81 demo touched no hc" test -z "$(rg '^hc-call ' "$FAKE_LOG")"
+"$script" demo off >/dev/null
+
+# Review fixes (#22).
+reset
+FAKE_HC_IDLE=1
+export FAKE_HC_IDLE
+start=$SECONDS
+out=$("$script" app-list)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "82 idle core does not slow app-list" jq -e --argjson took "$took" '.ok and $took < 2' <<<"$out" ||
+  printf '  took %ss, got: %.200s\n' "$took" "$out"
+
+reset
+FAKE_HC_SNAPSHOT=$(jq -nc '{seq:1, terminals:
+  ([range(500) | {address: ("t" + tostring), state:"live",
+     status:{state:"working",kind:null},
+     parent:(if . == 0 then null else "t\(. - 1)" end), die_with_parent:true,
+     labels:{"herdr.space":"sp","where":"chain / Tab"}, title:"a", argv:[], status_ms:1}])}')
+start=$SECONDS
+out=$("$script" app-list)
+took=$((SECONDS - start))
+# shellcheck disable=SC2016 # $took is a jq variable
+check "83 deep chain is fast and capped" jq -e --argjson took "$took" '
+  .ok and $took < 5 and
+  ([.sessions[].agentList[] | select(.pane == "t0")][0].cascade | length) == 16' <<<"$out" ||
+  printf '  took %ss, got: %.200s\n' "$took" "$out"
+
+reset
+FAKE_HC_SNAPSHOT=$(jq -nc '{seq:1,terminals:[
+  {address:"t1",state:"live",status:null,parent:null,die_with_parent:false,
+   labels:{"herdr.space":"sp1","where":"shellname / ShellTab"},title:"shell",argv:[],status_ms:0},
+  {address:"t2",state:"live",status:{state:"working",kind:null},parent:"t1",die_with_parent:false,
+   labels:{},title:"child",argv:[],status_ms:1},
+  {address:"t3",state:"live",status:{state:"working",kind:null},parent:"razer/t9",die_with_parent:false,
+   labels:{},title:"cross",argv:[],status_ms:2},
+  {address:"razer/t9",state:"live",status:null,parent:null,die_with_parent:false,
+   labels:{"herdr.space":"spR","where":"razername / RTab"},title:"r",argv:[],status_ms:0}]}')
+out=$("$script" app-list)
+check "84 child takes its shell's name and tab" jq -e '
+  ([.sessions[] | select(.spaceId == "sp1")][0] | .name == "shellname" and .agentList[0].tab == "ShellTab")' <<<"$out"
+check "84 cross-machine ancestor ends the walk" jq -e '
+  ([.sessions[] | select(.spaceId == "_background")][0].agentList[0].pane == "t3") and
+  ([.sessions[].spaceId] | index("spR")) == null' <<<"$out"
+
+reset
+FAKE_HC_SEND_OUT='{"started":true,"status":"working","turn":1,"wait":{"reason":"status","ended":true,"status":"idle","exit_code":0}}'
+out=$(printf hi | FAKE_HC_READ_RC=3 "$script" app-prompt t1)
+check "85 failed read after send still ok" jq -e '.ok == true and .output == ""' <<<"$out"
+out=$(printf hi | FAKE_HC_READ_SLEEP=30 "$script" app-prompt t1)
+check "85 timed-out read dies" jq -e '.ok == false and .error == "timed out: read"' <<<"$out"
+
+reset
+FAKE_APP_LS_FAIL=refused FAKE_CLIENTS_FAIL=1
+export FAKE_APP_LS_FAIL FAKE_CLIENTS_FAIL
+fake_client herdr-app window
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS
+out=$("$script" app-focus t1)
+stop_bg
+check "86 failing hyprctl is an error" jq -e '.error == "could not find herdr-app window"' <<<"$out"
+check "86 failing hyprctl launches nothing" test ! -e "$FAKE_APP_PID_FILE"
+unset FAKE_CLIENTS_FAIL
+
+reset
+long=$(jq -nr '[range(400) | "t\(.)"] | join(",")')
+out=$("$script" app-kill t1 "$long")
+check "87 cascade key of 400 addresses is accepted" jq -e '.error != "not a cascade key"' <<<"$out"
 
 exit "$failed"
