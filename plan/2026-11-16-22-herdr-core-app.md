@@ -474,6 +474,8 @@ call the real tools.
    exits normally, `hcAvailable` stays true and the subscription restarts.
    The test copies the model with a stub `qs.Commons`
    (`tests/app-subscription-stubs/`) into a temp shell directory.
+   Issue 2983 G7 adds two timed `app-list` retries after a failed read, and
+   tests recovery when only heartbeats follow.
 
 6. **`README.md` and `manifest.json`.**
    - **Manifest.** `"version": "1.1.0"`. The `description` adds "and the

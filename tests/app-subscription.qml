@@ -18,10 +18,12 @@ ShellRoot {
     appCoalesceMs: 100
     appWatchdogMs: 1500
     appBackoffMs: 200
+    appListRetryMs: 200
   }
 
   FileView { id: runLog; path: shell.dir + "/app-list-runs"; blockLoading: true; printErrors: false }
   FileView { id: startLog; path: shell.dir + "/hc-starts"; blockLoading: true; printErrors: false }
+  FileView { id: failLog; path: shell.dir + "/app-list-failed"; blockLoading: true; printErrors: false }
 
   function count(view) {
     try { view.reload(); return view.text().split("\n").filter(function (l) { return l !== "" }).length }
@@ -57,15 +59,15 @@ ShellRoot {
       if (starts >= 2) phase = 3
       else if (elapsed > 4000) fail("the subscription was not restarted")
     } else if (phase === 3) {
-      // 3. The restart's snapshot and one app-list clear it.
-      if (runs >= 2 && !m.appStale) phase = 4
-      else if (elapsed > 6000) fail("a good app-list after the restart did not clear stale")
+      // 3. The restart's first read fails; heartbeats alone must not prevent recovery.
+      if (runs >= 3 && count(failLog) === 1 && !m.appStale && starts === 2) phase = 4
+      else if (elapsed > 6000) fail("a retry after a failed app-list did not clear stale")
     } else if (phase === 4) {
       // 4. The fake then exits normally: hc is still available, and it restarts.
       // This also proves onExited is handled before runningChanged.
       if (starts >= 3) {
         if (!m.hcAvailable) return fail("a normal exit must not read as no hc")
-        console.log("PASS: coalescing, watchdog, restart, stale cleared, exit restarts")
+        console.log("PASS: coalescing, watchdog, bounded retry on heartbeats, stale cleared, exit restarts")
         Qt.exit(0)
       } else if (elapsed > 9000) fail("a clean exit did not restart the subscription")
     }

@@ -147,6 +147,8 @@ Item {
   property int appWatchdogMs: 40000
   property int appBackoffMs: 2000
   property int appBackoffCur: 0
+  property int appListRetryMs: 2000
+  property int appListRetries: 0
 
   // Which agent spoke last, as agentKey(), and every agent that
   // was already asking when we last looked.
@@ -1119,12 +1121,15 @@ Item {
     try { msg = JSON.parse(line) } catch (e) { return }
     if (!msg || typeof msg !== "object") return
     for (var k in msg) if (msg[k] === "heartbeat") return
+    appListRetries = 0
+    appListRetry.stop()
     if (appListProc.open) appDirty = true
     else if (!appCoalesce.running) appCoalesce.start()
   }
 
   function appRunList() {
     if (appListProc.running || appListProc.open) { appDirty = true; return }
+    appListRetry.stop()
     appListProc.gotOut = false
     appListProc.gotExit = false
     appListProc.open = true
@@ -1137,6 +1142,8 @@ Item {
     if (!hcAvailable || appBackoff.running) return
     appWatchdog.stop()
     appCoalesce.stop()
+    appListRetry.stop()
+    appListRetries = 0
     if (appSubProc.running) { appSubProc.launched = false; appSubProc.running = false }
     appSubLive = false
     appStale = true
@@ -1157,6 +1164,7 @@ Item {
   function appSubStartFailed() {
     appSubProc.launched = false
     appWatchdog.stop()
+    appListRetry.stop()
     hcAvailable = false
     appStale = false
     appSessions = []
@@ -1175,12 +1183,18 @@ Item {
       appMachines = data.machines || []
       appError = ""
       if (appSubLive) appStale = false
+      appListRetries = 0
+      appListRetry.stop()
       appBackoffCur = 0
       rebuild()
     } else {
       appStale = true
       appError = data && data.error ? String(data.error)
         : code > 0 ? "herdr-sessions exited with code " + code : "unexpected output from herdr-sessions"
+      if (hcAvailable && appSubLive && appListRetries < 2) {
+        appListRetries++
+        appListRetry.start()
+      }
     }
     if (appDirty) { appDirty = false; appRunList() }
   }
@@ -1398,6 +1412,12 @@ Item {
   Timer {
     id: appBackoff
     onTriggered: root.appStart()
+  }
+
+  Timer {
+    id: appListRetry
+    interval: root.appListRetryMs
+    onTriggered: root.appRunList()
   }
 
   Component.onCompleted: appStart()
