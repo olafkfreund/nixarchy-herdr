@@ -468,6 +468,13 @@ call the real tools.
 
    Verify: `bash tests/app-subscription.sh` exits 0.
 
+   **Deviations (implementation):** the fake prints the five event lines back
+   to back, because lines 50 ms apart can legitimately start a second run
+   inside a 100 ms coalesce window. A fourth assert was added: after the fake
+   exits normally, `hcAvailable` stays true and the subscription restarts.
+   The test copies the model with a stub `qs.Commons`
+   (`tests/app-subscription-stubs/`) into a temp shell directory.
+
 6. **`README.md` and `manifest.json`.**
    - **Manifest.** `"version": "1.1.0"`. The `description` adds "and the
      herdr desktop app's agents".
