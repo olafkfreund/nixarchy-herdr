@@ -89,7 +89,9 @@ run_dir_init() {               # idempotent; called by cmd_list and cmd_list_rem
 # through the process tree rather than signalled as a group.
 kill_tree() {
   local child
-  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  # The kernel's children list: pgrep -P scans all of /proc (~0.4 s on a busy host, per call).
+  # shellcheck disable=SC2013 # space-separated PIDs, word splitting intended
+  for child in $(cat /proc/"$1"/task/*/children 2>/dev/null); do kill_tree "$child"; done
   kill -TERM "$1" 2>/dev/null || true
 }
 run_dir_cleanup() {
