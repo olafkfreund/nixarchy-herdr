@@ -20,15 +20,15 @@ Middle-click the bar icon  → Refresh the bar counts
 ── Move ──────────────────────────
 DOWN  /  j                 → Next row
 UP  /  k                   → Previous row
-RIGHT  /  l                → Move across a row to its buttons
-LEFT  /  h                 → Move back towards the row
-TAB  /  SHIFT + TAB        → Cycle through the row's buttons
 ── Act ───────────────────────────
-RETURN  /  SPACE           → Jump to the agent, open the session, or press the button
+RETURN  /  SPACE           → Jump to the agent, open the session, or start a stopped one
 o                          → Open the session under the cursor
-SHIFT + K                  → Kill that session's server, or a desktop-app agent (asks first)
+x                          → Destroy what the row allows: kill, delete or end the agent (asks first)
+SHIFT + K                  → Same key job as x (same as x)
 i                          → Interrupt the desktop-app agent under the cursor
-x                          → Delete a stopped session (asks first)
++  /  -  /  0              → Text bigger, smaller, reset (not in an input line)
+CTRL + =  /  -  /  0       → Text size, also in an input line
+?                          → Show this sheet
 r                          → Refresh
 ESCAPE                     → Close
 ── Menu only ─────────────────────
@@ -40,7 +40,7 @@ p                          → Pin the panel to the desktop, or unpin it
 RETURN                     → Create the session, or send the prompt
 ESCAPE                     → Close the line and stop a running prompt
 ── Confirm dialog ────────────────
-LEFT  /  RIGHT             → Choose Cancel or Kill / Delete / Send
+←  /  →                      → Choose Cancel or Kill / Delete / Send
 RETURN                     → Confirm the highlighted choice (opens on Cancel)
 ESCAPE                     → Cancel
 KEYS

@@ -50,8 +50,9 @@ machine.
 **Prompting** goes to the agent that was under the cursor when you pressed
 `a`. An agent that is working, waiting on a question, or unreadable asks
 before the text is sent, because it would arrive in the middle of what the
-agent is doing. The answer appears under the line: only the reply, without the
-agent's footer or the conversation before it. The text crosses the panel and
+agent is doing. The answer appears under the line: the last 40 lines of the
+agent's output, indentation kept, in a box that scrolls. While it waits, the
+line reads "waiting N s · Esc cancels". The text crosses the panel and
 ssh on stdin, but it is an argument to `herdr agent prompt`, so a local
 process list shows it while the prompt waits.
 
@@ -74,14 +75,13 @@ that does not answer never delays the rest. Nothing is installed on them.
 | --- | --- |
 | `↓` / `j` | Next row |
 | `↑` / `k` | Previous row |
-| `→` / `l` | Move across a row to its buttons (open, then kill or delete) |
-| `←` / `h` | Move back towards the row |
-| `Tab` / `Shift+Tab` | Cycle through the row's buttons |
 | `Enter` / `Space` | Jump to the agent, open the session, or press the button you are on |
 | `o` | Open the session under the cursor |
-| `K` (Shift+k) | Kill that session's server, or end a desktop-app agent; asks first, with Cancel selected |
+| `x` or `K` | Destroy what the row allows: kill a running session's server, delete a stopped session, or end a desktop-app agent and its sub-agents; asks first, with Cancel selected |
 | `i` | Interrupt the desktop-app agent under the cursor |
-| `x` | Delete a stopped session; asks first, with Cancel selected |
+| `+` / `=`, `-`, `0` | Text bigger, smaller, reset (not while typing in an input line) |
+| `Ctrl` + `=` / `-` / `0` | The same, also while typing in an input line |
+| `?` | Close, then show the key sheet |
 | `r` | Refresh |
 | `Esc` | Close |
 
@@ -114,7 +114,14 @@ Dropdown panel only:
 | `Esc` | Cancel |
 
 Kill is `K`, not `k`: Omarchy's shared key handler takes lowercase `k` as
-"up" before the menu sees it.
+"up" before the menu sees it. `x` does the same job as `K` on every row.
+
+### Text size
+
+`+`, `-` and `0` (or `Ctrl` with them) make the text bigger, smaller or back to
+normal, from 0.8 to 1.6 times in steps of 0.1. The bar, the panel and the menu
+share one size, kept in `~/.cache/omarchy-herdr/text-scale`. The card widths
+follow it. The bar badge does not scale.
 
 ### In Omarchy's menus
 
@@ -161,15 +168,19 @@ turn. When the label is absent, the app window's attention decides, as above.
 
 ## What it shows
 
-The bar carries the number of running servers, on a badge sitting in the
-bottom-right corner of the icon. It turns red when an agent is blocked and waiting on
-an answer, green when work finished while you were looking elsewhere, and amber
-while something is still running. When every agent is idle there is nothing to
-say, so the badge goes away and the icon stands on its own.
+The bar badge sits in the bottom-right corner of the icon. Its number is how
+many agents need you: those waiting on an answer plus those that finished
+unseen, with `!` after it while the desktop app is marked. It turns red when an
+agent is blocked (or the data is stale), green when work finished while you
+were looking elsewhere, and amber while something is still running. With nothing
+needed it is a small dot in the state colour, and `!` alone means the data is
+stale. When every agent is idle the badge goes away and the icon stands on its
+own. Hover the icon for every part: servers, agents, waiting on you, finished,
+working, and any error.
 
 Each row in the panel is one session:
 
-- its name, in bold when a window is already showing it
+- its name, in the strong weight when a window is already showing it
 - the projects open inside it, taken from the workspace labels
 - how many agents it holds, and what the most urgent of them is up to
 - what every one of those agents is doing, from its terminal title, with its
@@ -191,7 +202,7 @@ at all:
 | working | accent | busy |
 | idle | grey | ready for input, and already seen |
 
-Every agent line carries its state as a word, right-aligned in one column down
+Every agent line carries its state as a word, right-aligned in a line down
 the edge of the panel, so what the herd is doing is a single glance rather than
 a scan. The agents inside a session are ordered by that state rather than by
 where they happen to sit - what wants an answer first, then what finished
@@ -200,7 +211,7 @@ herdr's own attention queue, the order its agent panel takes when
 `agent_panel_sort = "priority"`. `idle` is written as **ready**, because it is the ordinary resting
 state and "idle" reads like a fault.
 
-Both **needs you** and **done** are written bold and in colour, along with the title beside them, and their whole row is washed in that colour: red for a question, green for work that finished. **working** and **ready** stay quiet, because a panel where every line is coloured is a panel where colour means nothing. A dot is something you have to be looking at; a row of colour is something you catch out of the corner of your eye, which is how a pinned panel is read at all. The badge in the bar takes the same colour, so a herd that wants something says so with the panel closed.
+Both **needs you** and **done** are written in the strong weight and in colour, along with the title beside them, and their whole row is washed in that colour: red for a question, green for work that finished. **working** and **ready** stay quiet, because a panel where every line is coloured is a panel where colour means nothing. A dot is something you have to be looking at; a row of colour is something you catch out of the corner of your eye, which is how a pinned panel is read at all. The badge in the bar takes the same colour, so a herd that wants something says so with the panel closed.
 
 Waiting beats finished beats busy, wherever a session has to be summed up in
 one colour.
@@ -242,7 +253,7 @@ keeps the theme's urgent colour either way. The same entries in
   whatever the session was last showing: its pane is focused inside the server
   first, then the window comes up. That also marks a finished agent as seen, so
   clicking the line that says **done** is what clears it.
-- **The skull** (or `K`) ends that server, and is the only way it is ended from
+- **The skull** (or `x` or `K`) ends that server, and is the only way it is ended from
   here. It asks first, and the dialog opens on **Cancel** rather than on the
   confirming side: a dialog that destroys something on a reflexive Enter is
   worse than no dialog, because it trains the reflex. Kill and delete stop to
@@ -282,8 +293,8 @@ an afternoon, and it is not something the word "stopped" can tell you. A row
 that saved nothing worth naming says **nothing saved**.
 
 The list refreshes every three seconds while the panel is open. Closed, it
-refreshes every five seconds while an agent is working, waiting on you or
-finished and unseen, and every twenty seconds when everything is idle.
+refreshes every five seconds while an agent is working or waiting on you,
+and every twenty seconds otherwise.
 
 ## Pinning it
 
@@ -397,8 +408,10 @@ the moment it is drawn. While a list is being built, the snapshots sit briefly
 in a private (mode 700) directory under `$XDG_RUNTIME_DIR` (or `/tmp`), which is removed
 when the refresh ends, locally or on another host. No prompt or reply is stored.
 
-The one file it can create is the demo flag, and only if you turned demo mode
-on. It is empty and holds nothing about you, but it outlives the plugin:
+It can create two files, both under `~/.cache/omarchy-herdr`. The demo flag
+exists only if you turned demo mode on, and `text-scale` holds the text size
+once you change it. Neither holds anything about you, but both outlive the
+plugin:
 
 ```bash
 rm -rf ~/.cache/omarchy-herdr
