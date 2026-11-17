@@ -39,8 +39,8 @@ for (const [t, want] of [['+', 'bigger'], ['=', 'bigger'], ['-', 'smaller'], ['0
   assert.equal(key(t, ctx.Qt.AltModifier), '', `alt ${t}`);
   assert.equal(key(t, ctx.Qt.MetaModifier), '', `meta ${t}`);
 }
-assert.equal(key('?'), 'close,exec');
-assert.equal(calls[1][1][0], '/x/bin/herdr-menu-keys');
+assert.equal(key('?'), 'exec,close', 'the sheet starts before the surface closes');
+assert.equal(calls[0][1][0], '/x/bin/herdr-menu-keys');
 assert.ok(!calls.some((c) => c[0] === 'pin'), '? never pins');
 panel.pinned = true; assert.equal(key('?'), 'exec', 'a pinned card stays open for ?'); panel.pinned = false;
 key('p'); assert.deepEqual(calls[0], ['pin', true]);

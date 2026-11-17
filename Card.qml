@@ -98,10 +98,10 @@ PanelKeyCatcher {
 
   // The sheet is a picker that wants the keyboard, so the surface goes first.
   function openKeys() {
-    // A dropdown or the menu holds the keyboard, so it goes first; a pinned
-    // card stays where you put it.
-    if (!panel.pinned) panel.close()
+    // Start the sheet before closing: closing can unload this card, and
+    // nothing after that line would run. A pinned card stays where it is.
     Quickshell.execDetached([Qt.resolvedUrl("bin/herdr-menu-keys").toString().replace(/^file:\/\//, "")])
+    if (!panel.pinned) panel.close()
   }
 
   // Shift is allowed (it is how + is typed); Alt and Meta belong to the compositor.
