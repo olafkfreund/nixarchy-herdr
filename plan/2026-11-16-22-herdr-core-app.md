@@ -520,6 +520,15 @@ call the real tools.
    - **The `i` key** works.
    - **On a host without hc,** the bar costs no more than before.
 
+## Deviations (Issue 2983)
+
+Gaps closed before merge, each in the commit of its code: G1 `error` counts
+as blocked in the app projection; G2 a stale failure mark on the bar badge,
+never green; G5 status compares `turn` with the `herdr.seen` label, falling
+back to attention when the label is absent; G6 the snapshot reader returns at
+the first newline, byte cap kept; G7 two timed `app-list` retries after a
+failed read.
+
 ## Tests
 
 ```bash
