@@ -251,7 +251,7 @@ Panel {
           // reserves descender room a digit never uses. Nudge it back down
           // onto the middle of the disc.
           anchors.verticalCenterOffset: Math.round(font.pixelSize * 0.1)
-          text: herd.appMark ? "!" : herd.blockedCount > 0 ? herd.blockedCount : herd.runningCount
+          text: herd.blockedCount > 0 ? herd.blockedCount : herd.runningCount > 0 ? herd.runningCount : herd.appMark ? "!" : ""
           textFormat: Text.PlainText
           font.family: root.fontFamily
           font.pixelSize: Math.round((badge.height - 2 * badge.border.width) * 0.88)

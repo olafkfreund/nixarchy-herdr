@@ -930,9 +930,11 @@ check "60 open window status takes precedence" jq -e '
   ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
 FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
   (.turn = 4 | .labels["herdr.seen"] = "4")' <<<"$base_snapshot")
+printf '{"attention":{"t2":{"word":"done","seen":false}}}' > "$HOME/.config/herdr-app/view.json"
 out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
-check "60 seen done turn is idle" jq -e '
+check "60 seen label wins over unseen attention" jq -e '
   ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+printf '{"attention":{"t2":{"word":"done","seen":true}}}' > "$HOME/.config/herdr-app/view.json"
 FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
   (.labels["herdr.seen"] = "invalid")' <<<"$base_snapshot")
 out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
@@ -1020,7 +1022,8 @@ check "63 no orphan snapshot sleeper" test -z "$(pgrep -f "$marker" || true)"
 stop_bg
 
 reset
-out=$( (ulimit -v 98304; FAKE_HC_SNAPSHOT_BYTES=8388610 "$script" app-list) 2>"$tmp/oversized.err")
+# A bare head -n 1 must allocate the 64 MiB line and fail under this limit.
+out=$( (ulimit -v 98304; FAKE_HC_SNAPSHOT_BYTES=67108864 "$script" app-list) 2>"$tmp/oversized.err")
 check "64 oversized snapshot within memory limit" jq -e '.error == "could not read herdr-core"' <<<"$out"
 check "64 oversized snapshot without allocation failure" test ! -s "$tmp/oversized.err"
 

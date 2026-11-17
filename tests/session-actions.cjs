@@ -4,13 +4,16 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(`${__dirname}/../HerdrModel.qml`, 'utf8');
+const panel = fs.readFileSync(`${__dirname}/../Panel.qml`, 'utf8');
 const context = { root: { script: 'herdr-sessions' }, actionProc: {}, killProc: {}, dismiss() {},
                   activeCard: null, confirmTarget: null, confirmAction: '', confirmOpen: false,
                   sessions: [], hostState: { razer: 'ok', p620: 'ok' }, actionError: '',
                   settleTimer: { restart() {} }, actionFinished() {},
                   confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false,
                   hcAvailable: true, blockedCount: 0, doneCount: 0 };
-Object.defineProperty(context, 'appMark', { get() { return this.hcAvailable && this.appStale; } });
+const appMark = source.match(/readonly property bool appMark: (.+)/);
+assert.ok(appMark, 'Missing appMark property');
+Object.defineProperty(context, 'appMark', { get() { return vm.runInContext(appMark[1], context); } });
 context.root.urgent = 'URGENT'; context.root.finished = 'GREEN'; context.root.working = 'AMBER';
 vm.createContext(context);
 for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent',
@@ -71,6 +74,15 @@ for (const host of [undefined, '', 'razer', 'p620']) {
   [context.appStale, context.hcAvailable, context.doneCount] = saved;
 }
 console.log('PASS: local and remote open, focus, fallback, kill and delete routing');
+{
+  const badgeText = panel.match(/text: (herd\.[^\n]+)/);
+  assert.ok(badgeText, 'Missing badge text expression');
+  const shown = (blockedCount, runningCount, appMark) =>
+    vm.runInNewContext(badgeText[1], { herd: { blockedCount, runningCount, appMark } });
+  assert.equal(shown(2, 3, true), 2, 'stale keeps classic blocked count');
+  assert.equal(shown(0, 3, true), 3, 'stale keeps classic running count');
+  assert.equal(shown(0, 0, true), '!', 'stale with no count shows failure mark');
+}
 
 // A session name is only unique on its own host. Keyed by name alone, acting
 // on the local "3" dimmed razer's "3" too, and razer's agent asking blinked
@@ -649,7 +661,7 @@ console.log('PASS: a done-only list polls every 20 s');
     Object.assign(context, {
       hcAvailable: true, appStale: false, appDirty: false, appSubLive: false, appError: '',
       appSessions: [], appHostSessions: [], appMachines: [], appBackoffMs: 2000, appBackoffCur: 0,
-      appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(),
+      appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(), appListRetry: timer(),
       appSubProc: { running: false, launched: false, exited: false },
       appListProc: { running: false, open: false, kind: 'applist' },
       confirmAgent: null, killSessionRef: null, killAgentRef: null,

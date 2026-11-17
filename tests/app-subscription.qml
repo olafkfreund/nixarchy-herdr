@@ -11,6 +11,7 @@ ShellRoot {
   property string dir: Quickshell.env("TEST_DIR")
   property real t0: Date.now()
   property int phase: 0
+  property real retryStoppedAt: 0
 
   HerdrModel {
     id: m
@@ -36,6 +37,12 @@ ShellRoot {
     Qt.exit(1)
   }
 
+  Component.onCompleted: {
+    m.appStale = true
+    if (count(runLog) !== 0 || !m.appMark || !m.badgeShown) fail("stale before the first snapshot must show")
+    m.appStale = false
+  }
+
   function tick() {
     var elapsed = Date.now() - t0
     var runs = count(runLog), starts = count(startLog)
@@ -59,11 +66,20 @@ ShellRoot {
       if (starts >= 2) phase = 3
       else if (elapsed > 4000) fail("the subscription was not restarted")
     } else if (phase === 3) {
-      // 3. The restart's first read fails; heartbeats alone must not prevent recovery.
-      if (runs >= 3 && count(failLog) === 1 && !m.appStale && starts === 2) phase = 4
-      else if (elapsed > 6000) fail("a retry after a failed app-list did not clear stale")
+      // 3. A failed read gets exactly two retries; heartbeats do not reset the bound.
+      if (runs === 4 && count(failLog) === 3 && m.appStale && starts === 2) {
+        retryStoppedAt = elapsed
+        phase = 4
+      } else if (elapsed > 6000) fail("the failed app-list did not get two retries")
     } else if (phase === 4) {
-      // 4. The fake then exits normally: hc is still available, and it restarts.
+      if (runs !== 4) return fail("retries exceeded the fixed bound")
+      if (elapsed - retryStoppedAt >= 350) phase = 5
+    } else if (phase === 5) {
+      // 4. A real change starts a fresh read, which clears stale.
+      if (runs >= 5 && !m.appStale && starts === 2) phase = 6
+      else if (elapsed > 7000) fail("a new event did not clear stale")
+    } else if (phase === 6) {
+      // 5. The fake then exits normally: hc is still available, and it restarts.
       // This also proves onExited is handled before runningChanged.
       if (starts >= 3) {
         if (!m.hcAvailable) return fail("a normal exit must not read as no hc")

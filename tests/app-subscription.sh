@@ -14,7 +14,7 @@ cat > "$tmp/shell/bin/herdr-sessions" <<'STUB'
 # The model also polls `list`; only app-list is counted.
 [[ ${1-} != app-list ]] && { printf '{"ok":true,"error":"","sessions":[]}\n'; exit 0; }
 echo run >> "$TEST_DIR/app-list-runs"
-if [[ $(wc -l < "$TEST_DIR/hc-starts") -ge 2 && ! -e "$TEST_DIR/app-list-failed" ]]; then
+if [[ $(wc -l < "$TEST_DIR/hc-starts") -ge 2 && $(wc -l < "$TEST_DIR/app-list-runs") -le 4 ]]; then
   echo fail >> "$TEST_DIR/app-list-failed"
   printf '{"ok":false,"error":"one failed read"}\n'
   exit 1
@@ -31,7 +31,8 @@ n=$(wc -l < "$TEST_DIR/hc-starts")
 echo '{"seq":1,"terminals":[]}'
 case $n in
   1) for _ in 1 2 3 4 5; do echo '{"event":"changed"}'; done ;;
-  2) for _ in 1 2 3 4 5 6; do sleep 0.2; echo '{"event":"heartbeat"}'; done; exit 0 ;;
+  2) for _ in 1 2 3 4 5 6 7 8 9 10; do sleep 0.2; echo '{"event":"heartbeat"}'; done
+     echo '{"event":"changed"}'; sleep 0.5; exit 0 ;;
 esac
 trap 'kill "$!"' TERM
 sleep 31.7 &
