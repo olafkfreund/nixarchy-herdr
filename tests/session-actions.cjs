@@ -7,7 +7,8 @@ const source = fs.readFileSync(`${__dirname}/../HerdrModel.qml`, 'utf8');
 const context = { root: { script: 'herdr-sessions' }, actionProc: {}, killProc: {}, dismiss() {},
                   activeCard: null, confirmTarget: null, confirmAction: '', confirmOpen: false,
                   sessions: [], hostState: { razer: 'ok', p620: 'ok' }, actionError: '',
-                  settleTimer: { restart() {} }, actionFinished() {} };
+                  settleTimer: { restart() {} }, actionFinished() {},
+                  confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false };
 vm.createContext(context);
 for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent',
                     'removeSession', 'killSession', 'askKill', 'askDelete', 'ask',
@@ -18,7 +19,13 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
                     'bestRow', 'attentionRank', 'agentAt', 'lastColumnFor', 'clampColumn',
                     'moveCursor', 'moveColumn', 'cycleColumn', 'cursorToAgent', 'cursorToSession',
                     'applyHosts', 'applyPayload', 'tooltipText', 'cleanTitle', 'pollInterval',
-                    'newSession', 'hostSummary', 'countLabel', 'startFailed', 'finishRun']) {
+                    'newSession', 'hostSummary', 'countLabel', 'startFailed', 'finishRun',
+                    'validHcAddress', 'requestNew', 'requestPrompt', 'requestInterrupt',
+                    'askKillAgent', 'appKill', 'newAppSpace', 'appStart', 'appLine',
+                    'appRunList', 'appSubDown', 'appSubExited', 'appSubStartFailed',
+                    'applyAppList', 'appMachineState', 'appRowStale', 'appRowNotLive',
+                    'appLaunch', 'confirmMessage', 'subtitleFor', 'agentNote', 'agentColor',
+                    'activateCursor']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
   assert.ok(match, `Missing function: ${name}`);
   vm.runInContext(match[0], context);
@@ -562,4 +569,246 @@ console.log('PASS: a done-only list polls every 20 s');
   assert.equal(m.newField.text, 'hello');
   assert.match(m.root.promptReply, /could not start/);
   console.log('PASS: a pending new is not overwritten; a prompt that cannot start unlocks');
+}
+
+// herdr-core and herdr-app: the subscription, the sources, the keys, the
+// kind-aware actions and the "not live" refusals.
+{
+  const timer = () => ({ running: false, starts: 0, restarts: 0, interval: 0,
+    start() { this.running = true; this.starts++; },
+    restart() { this.running = true; this.restarts++; },
+    stop() { this.running = false; } });
+  const appFresh = () => {
+    fresh();
+    Object.assign(context, {
+      hcAvailable: true, appStale: false, appDirty: false, appSubLive: false, appError: '',
+      appSessions: [], appHostSessions: [], appMachines: [], appBackoffMs: 2000, appBackoffCur: 0,
+      appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(),
+      appSubProc: { running: false, launched: false, exited: false },
+      appListProc: { running: false, open: false, kind: 'applist' },
+      confirmAgent: null, killSessionRef: null, killAgentRef: null,
+      beginConfirms: 0, emitted: 0, prompts: 0,
+      activeCard: { beginConfirm() { context.beginConfirms++; }, endConfirm() {} },
+      newSessionRequested() { context.emitted++; }, promptRequested() { context.prompts++; },
+    });
+    Object.assign(context.root, { columnRow: 0, columnOpen: 1, columnDestroy: 2, urgent: 'URGENT' });
+    context.urgent = 'URGENT';
+  };
+  const listOut = (rows, machines = []) => JSON.stringify({ ok: true, error: '', sessions: rows, machines });
+  const app = (spaceId, host, ...addrs) => ({ kind: 'app', name: 'space ' + spaceId, host, spaceId, running: true,
+    readable: true, agents: addrs.length, projects: [],
+    agentList: addrs.map((a) => ({ title: 't' + a, status: 'idle', kind: null, pane: a, tab: '',
+      seq: 0, cascade: [], cascadeKey: '' })) });
+  const runList = (rows, machines) => {
+    context.appListProc.running = false;
+    finish(context.appListProc, listOut(rows, machines), 0);
+  };
+
+  // Coalescing, heartbeats, the dirty rerun
+  appFresh();
+  context.appStart();
+  assert.equal(context.appSubProc.running, true);
+  context.appLine('{"seq":1,"terminals":[]}');
+  for (let i = 0; i < 3; i++) context.appLine('{"event":"x"}');
+  assert.equal(context.appCoalesce.starts, 1, 'a burst starts the timer once');
+  context.appCoalesce.running = false;
+  context.appRunList();
+  assert.deepEqual(Array.from(context.appListProc.command), ['herdr-sessions', 'app-list', '--remote']);
+  context.appLine('{"event":"y"}');
+  assert.equal(context.appDirty, true);
+  assert.equal(context.appCoalesce.starts, 1, 'a line during a run does not start the timer');
+  context.appListProc.command = null;
+  runList([]);
+  assert.ok(context.appListProc.command, 'dirty gives exactly one more run');
+  assert.equal(context.appDirty, false);
+  context.appListProc.command = null;
+  runList([]);
+  assert.equal(context.appListProc.command, null, 'and no more than one');
+  const before = context.appCoalesce.starts, wd = context.appWatchdog.restarts;
+  context.appLine('{"type":"heartbeat"}');
+  context.appLine('not json');
+  assert.equal(context.appCoalesce.starts, before, 'heartbeats and junk trigger nothing');
+  assert.equal(context.appWatchdog.restarts, wd + 2, 'but every line resets the watchdog');
+  console.log('PASS: a burst coalesces to one app-list, dirty reruns once, heartbeats only reset the watchdog');
+
+  // Staleness and backoff
+  appFresh();
+  context.appStart();
+  context.appLine('{"seq":1,"terminals":[]}');
+  context.appSubDown();
+  assert.equal(context.appStale, true);
+  assert.equal(context.appSubProc.running, false, 'a silent subscription is killed');
+  assert.equal(context.appBackoff.interval, 2000);
+  context.appSubDown();
+  assert.equal(context.appBackoff.starts, 1, 'a second down while waiting does nothing');
+  context.appSubExited();
+  assert.equal(context.appBackoff.starts, 1, 'the exit of a process we killed is ignored');
+  context.appBackoff.running = false;
+  context.appStart();
+  assert.equal(context.appSubProc.running, true);
+  context.appSubExited();                          // it died by itself
+  assert.equal(context.appBackoff.interval, 4000, 'backoff doubles');
+  assert.equal(context.appStale, true);
+  context.appBackoff.running = false;
+  context.appStart();
+  runList([]);                                     // answered before any line arrived
+  assert.equal(context.appStale, true, 'a list that lands while the subscription is down does not clear stale');
+  context.appLine('{"seq":2,"terminals":[]}');
+  runList([]);
+  assert.equal(context.appStale, false);
+  assert.equal(context.appBackoffCur, 0, 'backoff resets after a good list');
+  context.appListProc.running = false;
+  finish(context.appListProc, '{"ok":false,"error":"boom"}', 1);
+  assert.equal(context.appStale, true);
+  assert.equal(context.appError, 'boom');
+  assert.equal(context.actionError, '', 'a list failure never touches actionError');
+  console.log('PASS: stale until a good app-list, backoff doubles and resets');
+
+  // No hc at all
+  appFresh();
+  context.appSessions = [app('sp1', '', 't1')];
+  context.appSubProc.launched = true;
+  context.appSubStartFailed();
+  assert.equal(context.hcAvailable, false);
+  assert.equal(context.appSessions.length, 0);
+  context.appStart();
+  context.appSubDown();
+  assert.equal(context.appSubProc.running, false, 'no retry');
+  assert.equal(context.appBackoff.starts, 0);
+  console.log('PASS: no hc means no rows and no retry');
+
+  // Four sources, the menu split, keys, the cursor
+  appFresh();
+  context.hostNames = ['razer'];
+  context.localSessions = [{ name: 'c1', running: true, agentList: [{ pane: 'w1:p1', status: 'idle' }] }];
+  context.hostSessions = { razer: [{ name: 'c2', host: 'razer', running: true, agentList: [] }] };
+  context.hostState = { razer: 'ok' };
+  runList([app('sp1', '', 't1'), app('sp1', 'razer', 'razer/t1'), app('sp2', '', 't2')],
+          [{ name: 'razer', state: 'connected' }]);
+  assert.deepEqual(Array.from(context.sessions, (x) => x.name),
+    ['c1', 'space sp1', 'space sp2', 'c2', 'space sp1']);
+  assert.equal(context.sessions[1].host, '');
+  assert.equal(context.sessions[4].host, 'razer');
+  const keys = new Set(Array.from(context.sessions, (x) => context.sessionKey(x)));
+  assert.equal(keys.size, 5, 'no key collides');
+  assert.notEqual(context.sessionKey({ kind: 'app', host: '', spaceId: 'sp1' }),
+                  context.sessionKey({ name: 'sp1' }));
+  context.cursorPlaced = true; context.cursor = 1;   // sp1's agent; classic c1 is row 0
+  assert.equal(context.agentAt(context.cursor).pane, 't1');
+  const renamed = app('sp1', '', 't1'); renamed.name = 'renamed';
+  runList([app('sp0', '', 't0'), renamed, app('sp2', '', 't2'), app('sp1', 'razer', 'razer/t1')],
+          [{ name: 'razer', state: 'connected' }]);
+  assert.equal(context.agentAt(context.cursor).pane, 't1', 'the cursor follows a renamed space');
+  // the bar's instance never gets remote rows
+  context.remote = false;
+  runList([app('sp1', '', 't1'), app('sp1', 'razer', 'razer/t1')]);
+  assert.equal(context.appHostSessions.length, 0);
+  assert.equal(context.sessions.filter((x) => x.kind === 'app').length, 1);
+  console.log('PASS: the four sources merge, the bar gets no remote rows, keys differ, the cursor follows');
+
+  // Dispatch by kind
+  appFresh();
+  context.hostNames = [];
+  runList([app('sp1', 'razer', 'razer/t3')], [{ name: 'razer', state: 'connected' }]);
+  const row = context.sessions[0];
+  const last = () => Array.from(context.actionProc.command);
+  context.openSession(row);
+  assert.deepEqual(last(), ['herdr-sessions', 'app-focus', 'razer/t3']);
+  assert.equal(context.actionDismiss, true);
+  assert.equal(context.run('kill', row), false, 'a classic action never targets an app row');
+  context.killSession(row);
+  assert.equal(context.killProc.running, false);
+  context.actionProc = { running: false, kind: 'action' };
+  context.cursor = 0;
+  context.requestInterrupt();
+  assert.deepEqual(last(), ['herdr-sessions', 'app-interrupt', 'razer/t3']);
+  finish(context.actionProc, '{"ok":true,"note":"still working"}', 0);
+  assert.equal(context.actionError, 'still working');
+  assert.equal(context.newAppSpace('razer', 'proj', ''), true);
+  assert.deepEqual(last(), ['herdr-sessions', 'app-new', 'proj', '', 'razer']);
+  finish(context.actionProc, '{"ok":true}', 0);
+  context.newAppSpace('', 'proj', '/home/x');
+  assert.deepEqual(last(), ['herdr-sessions', 'app-new', 'proj', '/home/x', '']);
+  finish(context.actionProc, '{"ok":true}', 0);
+  assert.equal(context.newAppSpace('', 'bad name', ''), false);
+  assert.equal(context.lastColumnFor(row), 1, 'no destroy column on an app row');
+  context.column = 2; context.activateCursor();
+  assert.equal(context.confirmOpen, false, 'the destroy column does nothing on an app row');
+  context.askDelete(row);
+  assert.equal(context.confirmOpen, false);
+  console.log('PASS: app rows dispatch to the app subcommands with the right arguments');
+
+  // Kill: confirm names the cascade; a changed reply reopens it
+  appFresh();
+  const withCascade = app('sp1', '', 't3');
+  Object.assign(withCascade.agentList[0], { title: 'lead', cascadeKey: 't4',
+    cascade: [{ address: 't4', title: 'sub-agent' }] });
+  runList([withCascade]);
+  context.cursor = 0; context.cursorPlaced = true;
+  context.askKill(context.sessions[0]);
+  assert.equal(context.confirmOpen, true);
+  assert.equal(context.killProc.running, false, 'asks first');
+  assert.match(context.confirmMessage(), /lead/);
+  assert.match(context.confirmMessage(), /t4 sub-agent/);
+  context.confirmPending();
+  assert.deepEqual(Array.from(context.killProc.command), ['herdr-sessions', 'app-kill', 't3', 't4']);
+  context.killProc.running = false;
+  finish(context.killProc, JSON.stringify({ ok: false, changed: true,
+    cascade: [{ address: 't4', title: 'sub-agent' }, { address: 't9', title: 'late child' }],
+    cascadeKey: 't4,t9' }), 0);
+  assert.equal(context.confirmOpen, true, 'a changed reply reopens the confirmation');
+  assert.equal(context.beginConfirms, 2);
+  assert.match(context.confirmMessage(), /t9 late child/);
+  assert.equal(context.actionError, '');
+  context.confirmPending();
+  assert.deepEqual(Array.from(context.killProc.command), ['herdr-sessions', 'app-kill', 't3', 't4,t9']);
+  console.log('PASS: kill confirms with the cascade and reopens when it changed');
+
+  // Not live
+  const refusals = [
+    ['stale', () => { context.appStale = true; }, 'desktop app', 'sp1', ''],
+    ['machine', () => { context.appMachines = [{ name: 'razer', state: 'disconnected' }]; }, 'razer', 'sp2', 'razer'],
+  ];
+  for (const [, make, who, space, host] of refusals) {
+    appFresh();
+    runList([app(space, host, host ? 'razer/t1' : 't1')], [{ name: 'razer', state: 'connected' }]);
+    make();
+    const target = context.sessions[0];
+    context.cursor = 0; context.cursorPlaced = true;
+    const attempts = [
+      () => context.focusAgent(target, target.agentList[0]),
+      () => context.openSession(target),
+      () => context.requestInterrupt(),
+      () => context.askKill(target),
+      () => context.requestNew(),
+      () => context.requestPrompt(),
+      () => context.newAppSpace(host, 'p', ''),
+    ];
+    for (const attempt of attempts) {
+      context.actionError = '';
+      attempt();
+      assert.equal(context.actionError, who + ' is not live');
+    }
+    assert.equal(context.actionProc.running, false);
+    assert.equal(context.confirmOpen, false);
+    assert.equal(context.emitted + context.prompts, 0);
+    assert.equal(context.subtitleFor(target), 'not live');
+  }
+  console.log('PASS: a not-live row refuses focus, prompt, interrupt, kill and new');
+
+  // Helpers
+  appFresh();
+  assert.equal(context.validHcAddress('t3'), true);
+  assert.equal(context.validHcAddress('razer/t4'), true);
+  for (const bad of ['', 'w1:p1', 't3; x', '/t3', 'a/b/t3']) assert.equal(context.validHcAddress(bad), false);
+  assert.equal(context.agentNote('error'), 'error');
+  assert.equal(context.agentNote('blocked', 'question'), 'needs you: question');
+  assert.equal(context.agentNote('blocked'), 'needs you');
+  assert.equal(context.agentColor('error'), 'URGENT');
+  assert.equal(context.subtitleFor(app('s', '', 't1')), 'desktop app');
+  context.appMachines = [{ name: 'razer', state: 'connected' }];
+  assert.match(context.subtitleFor(app('s', 'razer', 'razer/t1')), /desktop app.*razer/);
+  context.appStale = true;
+  assert.match(context.tooltipText(), /herdr-core not reachable/);
+  console.log('PASS: validators, agentNote, agentColor, subtitles and the stale tooltip');
 }

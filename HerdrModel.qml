@@ -123,6 +123,26 @@ Item {
   property var confirmTarget: null
   property string confirmAction: ""
   property bool confirmOpen: false
+  // The agent an app kill is asking about, and the one a kill is running on,
+  // so a `changed` reply can reopen the question with the new cascade.
+  property var confirmAgent: null
+  property var killSessionRef: null
+  property var killAgentRef: null
+
+  // herdr-core and herdr-app, read through `hc events` (a subscription that
+  // only says "something changed") and `herdr-sessions app-list`.
+  property bool hcAvailable: true
+  property bool appStale: false
+  property bool appDirty: false
+  property bool appSubLive: false
+  property string appError: ""
+  property var appSessions: []
+  property var appHostSessions: []
+  property var appMachines: []
+  property int appCoalesceMs: 250
+  property int appWatchdogMs: 40000
+  property int appBackoffMs: 2000
+  property int appBackoffCur: 0
 
   // Which agent spoke last, as agentKey(), and every agent that
   // was already asking when we last looked.
@@ -171,6 +191,11 @@ Item {
   // as an argument the same way names do.
   function validPane(pane) {
     return /^[A-Za-z0-9_-]{1,32}:[A-Za-z0-9_-]{1,32}$/.test(String(pane))
+  }
+
+  // The same fence as valid_hc_address in the script.
+  function validHcAddress(addr) {
+    return /^([A-Za-z0-9][A-Za-z0-9._-]{0,31}\/)?t[0-9a-z]{1,9}$/.test(String(addr))
   }
 
   // Markup stripped rather than escaped: the bar tooltip is the shell's own
@@ -230,6 +255,7 @@ Item {
   // One completion per run. Only an action may dismiss the surface.
   function complete(kind, out, code, proc) {
     if (kind === "list") { applyPayload(out, code); return }
+    if (kind === "applist") { applyAppList(out, code); return }
     if (kind === "host") {
       if (proc.gen !== pollGen) return
       applyHostPayload(proc.modelData, code === 0 ? out : "")
@@ -241,7 +267,18 @@ Item {
     var action = kind === "kill" ? "kill" : actionName
     if (kind === "kill") killPendingKey = ""
     else pendingKey = ""
-    if (ok) actionError = ""
+    // The cascade moved since it was shown: ask again with the new one.
+    if (kind === "kill" && data && data.changed === true && killSessionRef && killAgentRef) {
+      confirmTarget = killSessionRef
+      confirmAgent = Object.assign({}, killAgentRef,
+        { cascade: data.cascade || [], cascadeKey: String(data.cascadeKey || "") })
+      confirmAction = "appkill"
+      confirmOpen = true
+      actionError = ""
+      if (activeCard) activeCard.beginConfirm()
+      return
+    }
+    if (ok) actionError = data.note ? String(data.note) : ""
     else if (data && data.error) actionError = String(data.error)
     else if (code !== 0) actionError = "herdr-sessions exited with code " + code
     else actionError = data ? action + " failed" : "unexpected output from herdr-sessions"
@@ -258,12 +295,14 @@ Item {
   // names them, with the counts taken over the lot so the title and the badge
   // describe what is on screen.
   function rebuild() {
-    var all = localSessions.slice()
-    if (remote)
+    var all = localSessions.concat(appSessions)
+    if (remote) {
       for (var i = 0; i < hostNames.length; i++) {
         var list = hostSessions[hostNames[i]] || []
         for (var j = 0; j < list.length; j++) all.push(list[j])
       }
+      all = all.concat(appHostSessions)
+    }
 
     // The cursor follows what it is on, not the number of the row: a refresh
     // that re-sorts the list must not move it onto a different session.
@@ -359,7 +398,7 @@ Item {
   }
 
   function run(action, session, extra, dismissOnSuccess) {
-    if (!session || !validName(session.name)) return false
+    if (!session || session.kind === "app" || !validName(session.name)) return false
     return launch(action, session.host, session.name, extra, dismissOnSuccess)
   }
 
@@ -373,6 +412,7 @@ Item {
 
   // Focus the window this session is already showing, or open one.
   function openSession(session) {
+    if (session && session.kind === "app") { focusAgent(session, (session.agentList || [])[0]); return }
     if (!session || !validName(session.name)) return
     run("open", session, undefined, true)
   }
@@ -389,6 +429,11 @@ Item {
   // is what the click would have done anyway.
   function focusAgent(session, agent) {
     if (!session || !agent) return
+    if (session.kind === "app") {
+      if (!validHcAddress(agent.pane) || appRowNotLive(session)) return
+      appLaunch(["app-focus", agent.pane], "app-focus", true, sessionKey(session), false)
+      return
+    }
     if (!validPane(agent.pane)) { openSession(session); return }
     if (!validName(session.name)) return
     run("focus", session, agent.pane, true)
@@ -426,12 +471,13 @@ Item {
   // ConfirmDialog's own default: a dialog that destroys something on a
   // reflexive Enter is worse than no dialog, because it trains the reflex.
   function askKill(session) {
+    if (session && session.kind === "app") { askKillAgent(session); return }
     if (!session || !session.running || !validName(session.name) || hostUnchecked(session)) return
     ask(session, "kill")
   }
 
   function askDelete(session) {
-    if (!session || session.isDefault || session.running || hostUnchecked(session)) return
+    if (!session || session.kind === "app" || session.isDefault || session.running || hostUnchecked(session)) return
     ask(session, "delete")
   }
 
@@ -455,6 +501,7 @@ Item {
   function closeConfirm() {
     confirmOpen = false
     confirmTarget = null
+    confirmAgent = null
     confirmAction = ""
     if (activeCard) activeCard.endConfirm()
   }
@@ -462,6 +509,7 @@ Item {
   function confirmPending() {
     var target = confirmTarget
     var action = confirmAction
+    var agent = confirmAgent
     closeConfirm()
     if (!target) return
     // The list may have changed while the dialog was open: act on what is
@@ -470,6 +518,12 @@ Item {
     var key = sessionKey(target)
     for (var i = 0; i < sessions.length; i++)
       if (sessionKey(sessions[i]) === key) current = sessions[i]
+    if (action === "appkill") {
+      var live = current && agent && (current.agentList || []).some(function (a) { return a.pane === agent.pane })
+      if (!live) { actionError = String(agent ? agent.pane : "agent") + " changed; nothing done"; return }
+      appKill(current, agent)
+      return
+    }
     if (!current || (action === "kill" && !current.running)
         || (action === "delete" && current.running)) {
       actionError = sessionLabel(target) + " changed; nothing done"
@@ -481,6 +535,16 @@ Item {
 
   function confirmMessage() {
     if (!confirmTarget) return ""
+    if (confirmAction === "appkill" && confirmAgent) {
+      var cascade = confirmAgent.cascade || []
+      var msg = "End " + cleanTitle(confirmAgent.title) + " (" + confirmAgent.pane + ")?"
+        + " It is not asked to finish first."
+      if (cascade.length > 0)
+        msg += " This also ends " + cascade.length + ": " + cascade.map(function (c) {
+          return c.address + (c.title ? " " + cleanTitle(c.title) : "")
+        }).join(", ") + "."
+      return msg
+    }
     if (confirmAction === "delete")
       return "Delete " + sessionLabel(confirmTarget)
         + "? Everything herdr kept for this session goes with it."
@@ -567,6 +631,8 @@ Item {
   // the cursor must step over it rather than park on a dead control.
   function lastColumnFor(session) {
     if (!session) return root.columnRow
+    // An app space is never destroyed from here, so it has no destroy button.
+    if (session.kind === "app") return root.columnOpen
     if (session.running) return root.columnDestroy
     return session.isDefault ? root.columnOpen : root.columnDestroy
   }
@@ -620,6 +686,7 @@ Item {
     if (!session) return
     if (column === root.columnOpen) { openSession(session); return }
     if (column === root.columnDestroy) {
+      if (session.kind === "app") return
       if (session.running) askKill(session)
       else askDelete(session)
       return
@@ -702,12 +769,19 @@ Item {
   // Asked for by a key in the card, answered by whichever surface can show an
   // input. The bar panel does not connect it, so `n` does nothing there.
   signal newSessionRequested()
-  function requestNew() { newSessionRequested() }
+  function requestNew() {
+    var session = sessionAt(cursor)
+    if (appRowNotLive(session)) return
+    newSessionRequested()
+  }
 
   // The same arrangement for `a`: only when the cursor is on an agent, since a
   // prompt goes to one pane and a bare session has none to receive it.
   signal promptRequested()
-  function requestPrompt() { if (agentAt(cursor)) promptRequested() }
+  function requestPrompt() {
+    if (!agentAt(cursor) || appRowNotLive(sessionAt(cursor))) return
+    promptRequested()
+  }
 
   // An agent in the middle of something, or one herdr cannot read. Typing into
   // it interleaves with its own output, so the menu asks before sending.
@@ -741,6 +815,9 @@ Item {
   // twice with less meaning.
   function subtitleFor(session) {
     if (!session) return ""
+    if (session.kind === "app")
+      return appRowStale(session) ? "not live"
+        : "desktop app" + (session.host ? "  \u00b7  " + session.host : "")
     if (session.running && (session.agentList || []).length > 0) return ""
     var projects = session.projects || []
     if (projects.length > 0) return projects.join("  ·  ")
@@ -811,6 +888,7 @@ Item {
     if (status === "blocked") return root.urgent
     if (status === "done") return root.finished
     if (status === "working") return root.workingForeground
+    if (status === "error") return root.urgent
     return Qt.darker(root.foreground, 1.9)
   }
 
@@ -825,8 +903,9 @@ Item {
   // a scan. Two of them are still news and two are not, and that is carried by
   // weight and colour rather than by leaving a word out: the ones that want
   // something are bold and coloured, the rest are quiet grey.
-  function agentNote(status) {
-    if (status === "blocked") return "needs you"
+  function agentNote(status, kind) {
+    if (status === "error") return "error"
+    if (status === "blocked") return kind ? "needs you: " + kind : "needs you"
     if (status === "done") return "done"
     if (status === "working") return "working"
     if (status === "idle") return "ready"
@@ -876,12 +955,14 @@ Item {
     if (blockedCount > 0) parts.push(blockedCount + " waiting on you")
     if (doneCount > 0) parts.push(doneCount + " finished")
     if (unreadableCount > 0) parts.push(unreadableCount + " unreadable")
+    if (appStale) parts.push("herdr-core not reachable")
     return parts.join(", ")
   }
 
   // A session name is only unique on its own host, so every key the UI
   // matches rows by carries the host too.
   function sessionKey(session) {
+    if (session.kind === "app") return "app\u0000" + (session.host || "") + "\u0000" + session.spaceId
     return (session.host || "") + "\u0000" + session.name
   }
 
@@ -930,6 +1011,163 @@ Item {
   function blinking(session, agent) {
     if (!agent || root.attentionKey === "") return false
     return root.agentKey(session, agent.pane) === root.attentionKey
+  }
+
+  // ---- herdr-core and herdr-app ----------------------------------------
+
+  function appMachineState(host) {
+    for (var i = 0; i < appMachines.length; i++)
+      if (appMachines[i].name === host) return appMachines[i].state
+    return ""
+  }
+
+  // Not live: the subscription is down or the last read failed, or the row's
+  // machine is not connected. Nothing is acted on a row in that state.
+  function appRowStale(session) {
+    if (!session || session.kind !== "app") return false
+    return appStale || (session.host ? appMachineState(session.host) !== "connected" : false)
+  }
+
+  function appRowNotLive(session) {
+    if (!appRowStale(session)) return false
+    actionError = (session.host || "desktop app") + " is not live"
+    return true
+  }
+
+  // One app command on actionProc, or on killProc for a kill.
+  function appLaunch(command, label, dismissOnSuccess, key, killing) {
+    var proc = killing ? killProc : actionProc
+    if (proc.running || proc.open) {
+      actionError = "busy: " + (killing ? "kill" : actionName) + " is still running"
+      return false
+    }
+    if (killing) killPendingKey = key
+    else { pendingKey = key; actionName = label; actionDismiss = dismissOnSuccess === true }
+    proc.gotOut = false
+    proc.gotExit = false
+    proc.open = true
+    proc.command = [root.script].concat(command)
+    proc.running = true
+    return true
+  }
+
+  function requestInterrupt() {
+    var session = sessionAt(cursor), agent = agentAt(cursor)
+    if (!session || !agent || session.kind !== "app" || !validHcAddress(agent.pane)) return
+    if (appRowNotLive(session)) return
+    appLaunch(["app-interrupt", agent.pane], "app-interrupt", false, sessionKey(session), false)
+  }
+
+  function askKillAgent(session) {
+    var agent = agentAt(cursor)
+    if (!agent || sessionAt(cursor) !== session || !validHcAddress(agent.pane)) return
+    if (appRowNotLive(session)) return
+    confirmAgent = agent
+    ask(session, "appkill")
+  }
+
+  function appKill(session, agent) {
+    if (appRowNotLive(session)) return
+    killSessionRef = session
+    killAgentRef = agent
+    appLaunch(["app-kill", agent.pane, String(agent.cascadeKey || "")], "kill", false,
+              sessionKey(session), true)
+  }
+
+  // Always three arguments, so an empty directory or machine stays in place.
+  function newAppSpace(host, name, dir) {
+    if (!validName(name)) {
+      actionError = "not a valid session name"
+      return false
+    }
+    if (appStale || (host && appMachineState(host) !== "connected")) {
+      actionError = (host || "desktop app") + " is not live"
+      return false
+    }
+    return appLaunch(["app-new", name, dir || "", host || ""], "new", false, "", false)
+  }
+
+  function appStart() {
+    if (!hcAvailable) return
+    appSubProc.launched = true
+    appSubProc.exited = false
+    appSubProc.running = true
+    appWatchdog.restart()
+  }
+
+  // Every line proves the subscription alive. Anything but a heartbeat means
+  // "something changed", and only that; its fields are never read.
+  function appLine(line) {
+    appWatchdog.restart()
+    appSubLive = true
+    var msg
+    try { msg = JSON.parse(line) } catch (e) { return }
+    if (!msg || typeof msg !== "object") return
+    for (var k in msg) if (msg[k] === "heartbeat") return
+    if (appListProc.open) appDirty = true
+    else if (!appCoalesce.running) appCoalesce.start()
+  }
+
+  function appRunList() {
+    if (appListProc.running || appListProc.open) { appDirty = true; return }
+    appListProc.gotOut = false
+    appListProc.gotExit = false
+    appListProc.open = true
+    appListProc.command = remote ? [root.script, "app-list", "--remote"] : [root.script, "app-list"]
+    appListProc.running = true
+  }
+
+  // The subscription ended or went quiet: mark stale, retry after a longer wait.
+  function appSubDown() {
+    if (!hcAvailable || appBackoff.running) return
+    appWatchdog.stop()
+    appCoalesce.stop()
+    if (appSubProc.running) { appSubProc.launched = false; appSubProc.running = false }
+    appSubLive = false
+    appStale = true
+    var wait = appBackoffCur > 0 ? appBackoffCur : appBackoffMs
+    appBackoff.interval = wait
+    appBackoffCur = Math.min(wait * 2, 60000)
+    appBackoff.start()
+  }
+
+  function appSubExited() {
+    if (!appSubProc.launched) return
+    appSubProc.launched = false
+    appSubProc.exited = true
+    appSubDown()
+  }
+
+  // No hc to run: no rows, and no retry.
+  function appSubStartFailed() {
+    appSubProc.launched = false
+    appWatchdog.stop()
+    hcAvailable = false
+    appStale = false
+    appSessions = []
+    appHostSessions = []
+    appMachines = []
+    rebuild()
+  }
+
+  function applyAppList(text, code) {
+    var data = null
+    try { data = JSON.parse(text) } catch (e) { data = null }
+    if (data && data.ok === true && code === 0) {
+      var rows = data.sessions || []
+      appSessions = rows.filter(function (r) { return !r.host })
+      appHostSessions = remote ? rows.filter(function (r) { return r.host }) : []
+      appMachines = data.machines || []
+      appError = ""
+      if (appSubLive) appStale = false
+      appBackoffCur = 0
+      rebuild()
+    } else {
+      appStale = true
+      appError = data && data.error ? String(data.error)
+        : code > 0 ? "herdr-sessions exited with code " + code : "unexpected output from herdr-sessions"
+    }
+    if (appDirty) { appDirty = false; appRunList() }
   }
 
   function applyPayload(text, code) {
@@ -1100,6 +1338,54 @@ Item {
     onExited: function (exitCode) { root.storeResult(killProc, "exit", exitCode) }
     onRunningChanged: if (!running) root.startFailed(killProc)
   }
+
+  Process {
+    id: appSubProc
+    property bool launched: false
+    property bool exited: false
+    command: ["hc", "events", "--json"]
+    stdout: SplitParser {
+      onRead: function (line) { root.appLine(line) }
+    }
+    onExited: root.appSubExited()
+    onRunningChanged: if (!running && launched && !exited) root.appSubStartFailed()
+  }
+
+  Process {
+    id: appListProc
+    property string kind: "applist"
+    property string out: ""
+    property int code: 0
+    property bool gotOut: false
+    property bool gotExit: false
+    property bool open: false
+    stdout: StdioCollector {
+      onStreamFinished: root.storeResult(appListProc, "out", text)
+    }
+    onExited: function (exitCode) { root.storeResult(appListProc, "exit", exitCode) }
+    onRunningChanged: if (!running) root.startFailed(appListProc)
+  }
+
+  // The first change line waits this long for its neighbours, and later ones
+  // do not push it back, so a burst costs one app-list.
+  Timer {
+    id: appCoalesce
+    interval: root.appCoalesceMs
+    onTriggered: root.appRunList()
+  }
+
+  Timer {
+    id: appWatchdog
+    interval: root.appWatchdogMs
+    onTriggered: root.appSubDown()
+  }
+
+  Timer {
+    id: appBackoff
+    onTriggered: root.appStart()
+  }
+
+  Component.onCompleted: appStart()
 
   Timer {
     id: settleTimer
