@@ -17,9 +17,10 @@ Item {
   readonly property bool opened: host ? host.opened === true : false
   readonly property bool pinned: host ? host.pinned === true : false
   readonly property bool pinnable: host ? host.pinnable !== false : true
-  // A summoned menu is read from further away than a bar dropdown, so the
-  // surface says how big its text should be.
-  readonly property real textScale: host && host.textScale > 0 ? host.textScale : 1.0
+  // How big the text is on every surface that shows the herd. Kept in a file
+  // under the cache directory, so the bar panel and the menu agree and the
+  // size outlives a shell restart.
+  property real textScale: 1.0
   readonly property var activeCard: host ? host.activeCard : null
   readonly property color foreground: host ? host.foreground : Commons.Color.foreground
   readonly property color accent: host ? host.accent : Commons.Color.accent
@@ -31,7 +32,11 @@ Item {
   signal actionFinished(string action, bool ok)
 
   function close() { if (host) host.close() }
-  function togglePin() { if (host && typeof host.togglePin === "function") host.togglePin() }
+  // `fromKey` tells the pinned window the pin came from the keyboard, so it
+  // takes focus at once instead of after the mouse-pin delay.
+  function togglePin(fromKey) {
+    if (host && typeof host.togglePin === "function") host.togglePin(fromKey === true)
+  }
 
   // The script sits next to this file, so the plugin runs from wherever it
   // was installed without putting anything on $PATH.
@@ -97,6 +102,8 @@ Item {
   // asking - an idle herd cannot change until you change it.
   readonly property bool badgeActive:
     blockedCount > 0 || doneCount > 0 || workingCount > 0
+  // What the badge counts: the agents that want you.
+  readonly property int needCount: blockedCount + doneCount
   property bool reachable: true
   property string errorText: ""
   // Why an action refused, as it said so itself. `errorText` is about the
@@ -136,7 +143,7 @@ Item {
   // A failure mark for the bar badge: unconditional while stale, but never when
   // hc is absent (that case is silent by design).
   readonly property bool appMark: hcAvailable && appStale
-  readonly property bool badgeShown: appMark || (reachable && runningCount > 0 && badgeActive)
+  readonly property bool badgeShown: appMark || badgeActive
   property bool appDirty: false
   property bool appSubLive: false
   property string appError: ""
@@ -166,6 +173,9 @@ Item {
   // something to build on. It is only used to break a tie when two agents
   // start asking within the same poll.
   property string attentionKey: ""
+  // The blink lasts one minute from the moment it starts, so a herd that is
+  // left alone does not blink all night.
+  property bool blinkExpired: false
   property var wantingBefore: ({})
   // The first poll has nothing to compare against, so every agent that is
   // already waiting would look like it just spoke. That first answer only
@@ -178,15 +188,6 @@ Item {
   // seconds after you moved it.
   property bool cursorPlaced: false
 
-  // Where the cursor is across the row: 0 is the row itself, 1 the open
-  // button, 2 the destructive one. Right and Tab walk out to the buttons,
-  // Left walks back. Kept as a number rather than a per-row object so moving
-  // up and down holds its place in the row: walking a column of kill buttons
-  // is a thing you do on purpose.
-  readonly property int columnRow: 0
-  readonly property int columnOpen: 1
-  readonly property int columnDestroy: 2
-  property int column: 0
   property int cursor: -1
 
   // Names come back from herdr and go straight back out as an argument. The
@@ -340,6 +341,7 @@ Item {
     doneCount = done
     workingCount = working
     unreadableCount = unreadable
+    var moved = found >= 0 && found !== cursor
     if (found >= 0) cursor = found
     else if (cursor > rows.length - 1) cursor = rows.length - 1
 
@@ -348,9 +350,12 @@ Item {
       cursor = bestRow()
       cursorPlaced = true
       var row = rowAt(cursor)
-      if (row) showRow(row.sessionIndex)
+      if (row) showRow(row.sessionIndex, row.agentIndex)
+    } else if (moved && opened) {
+      // Same row, new place: a re-sort must not leave it out of sight.
+      var kept = rowAt(cursor)
+      if (kept) showRow(kept.sessionIndex, kept.agentIndex)
     }
-    clampColumn()
   }
 
   // What a host's dot says: it answered and something is running, it answered
@@ -474,7 +479,7 @@ Item {
   // stop to ask. Killing takes the server and everything running inside it
   // without asking anything to finish; deleting throws away the state herdr
   // kept for a stopped session. Neither can be taken back, and the two share
-  // the destroy column, so a mistaken Enter lands on whichever the row offers.
+  // the destroy key, so a mistaken press lands on whichever the row offers.
   //
   // The dialog opens on Cancel rather than on the confirming side, which is
   // ConfirmDialog's own default: a dialog that destroys something on a
@@ -635,43 +640,6 @@ Item {
     return best >= 0 ? best : (navRows.length > 0 ? 0 : -1)
   }
 
-  // The destructive button is not on every row: a stopped shared session has
-  // nothing to kill and nothing that may be deleted, so its slot is empty and
-  // the cursor must step over it rather than park on a dead control.
-  function lastColumnFor(session) {
-    if (!session) return root.columnRow
-    // An app space is never destroyed from here, so it has no destroy button.
-    if (session.kind === "app") return root.columnOpen
-    if (session.running) return root.columnDestroy
-    return session.isDefault ? root.columnOpen : root.columnDestroy
-  }
-
-  function clampColumn() {
-    var last = lastColumnFor(sessionAt(cursor))
-    if (column > last) column = last
-    if (column < root.columnRow) column = root.columnRow
-  }
-
-  function moveColumn(delta) {
-    if (navRows.length === 0) return
-    cursorPlaced = true
-    if (cursor < 0) cursor = bestRow()
-    column += delta
-    clampColumn()
-  }
-
-  // Tab is the same walk with a wrap, so one key cycles a row without having
-  // to know how many buttons it has.
-  function cycleColumn(direction) {
-    if (navRows.length === 0) return
-    cursorPlaced = true
-    if (cursor < 0) { cursor = bestRow(); column = root.columnRow; return }
-    var last = lastColumnFor(sessionAt(cursor))
-    column += direction
-    if (column > last) column = root.columnRow
-    if (column < root.columnRow) column = last
-  }
-
   function moveCursor(delta) {
     if (navRows.length === 0) return
     cursorPlaced = true
@@ -679,13 +647,12 @@ Item {
     if (next < 0) next = 0
     if (next > navRows.length - 1) next = navRows.length - 1
     cursor = next
-    clampColumn()
     var row = rowAt(next)
-    if (row) showRow(row.sessionIndex)
+    if (row) showRow(row.sessionIndex, row.agentIndex)
   }
 
-  function showRow(sessionIndex) {
-    if (activeCard) activeCard.showRow(sessionIndex)
+  function showRow(sessionIndex, agentIndex) {
+    if (activeCard) activeCard.showRow(sessionIndex, agentIndex)
   }
 
   // Enter goes as deep as the cursor is: onto the agent when it is on one, and
@@ -693,22 +660,9 @@ Item {
   function activateCursor() {
     var session = sessionAt(cursor)
     if (!session) return
-    if (column === root.columnOpen) { openSession(session); return }
-    if (column === root.columnDestroy) {
-      if (session.kind === "app") return
-      if (session.running) askKill(session)
-      else askDelete(session)
-      return
-    }
     var agent = agentAt(cursor)
     if (agent) focusAgent(session, agent)
     else openSession(session)
-  }
-
-  // True when the cursor is on the row itself rather than out on a button,
-  // which is what the agent lines light up on.
-  function cursorInBody() {
-    return column === root.columnRow
   }
 
   // Which nav row a given agent is, so a delegate can tell whether the cursor
@@ -723,7 +677,6 @@ Item {
   // reaching for the arrows carries on from where you were pointing.
   function cursorToAgent(sessionIndex, agentIndex) {
     cursorPlaced = true
-    column = root.columnRow
     for (var i = 0; i < navRows.length; i++)
       if (navRows[i].sessionIndex === sessionIndex && navRows[i].agentIndex === agentIndex) {
         cursor = i
@@ -733,7 +686,6 @@ Item {
 
   function cursorToSession(sessionIndex) {
     cursorPlaced = true
-    column = root.columnRow
     for (var i = 0; i < navRows.length; i++)
       if (navRows[i].sessionIndex === sessionIndex) {
         cursor = i
@@ -852,11 +804,22 @@ Item {
   // Waiting beats finished beats busy, everywhere a state has to be reduced
   // to one thing: a question on screen outranks work that has already ended,
   // and both outrank an agent that is simply busy.
+  // The one word that says what a count of agents is doing: `c` is anything
+  // with blocked, done and working counts - a session, or the herd's totals.
+  function priority(c) {
+    if (!c) return "idle"
+    if ((c.blocked || 0) > 0) return "blocked"
+    if ((c.done || 0) > 0) return "done"
+    if ((c.working || 0) > 0) return "working"
+    return "idle"
+  }
+
   function noteLabel(session) {
     if (!session || !session.running) return ""
-    if ((session.blocked || 0) > 0) return session.blocked + " needs you"
-    if ((session.done || 0) > 0) return session.done + " done"
-    if ((session.working || 0) > 0) return session.working + " working"
+    var p = priority(session)
+    if (p === "blocked") return session.blocked + " needs you"
+    if (p === "done") return session.done + " done"
+    if (p === "working") return session.working + " working"
     return ""
   }
 
@@ -898,7 +861,7 @@ Item {
     if (status === "done") return root.finished
     if (status === "working") return root.workingForeground
     if (status === "error") return root.urgent
-    return Qt.darker(root.foreground, 1.9)
+    return Qt.alpha(root.foreground, 0.78)
   }
 
   // Every agent says what it is doing, in herdr's own terms: `blocked` is an
@@ -927,23 +890,26 @@ Item {
 
   function noteColor(session) {
     if (!session) return root.foreground
-    if ((session.blocked || 0) > 0) return root.urgent
-    if ((session.done || 0) > 0) return root.finished
+    var p = priority(session)
+    if (p === "blocked") return root.urgent
+    if (p === "done") return root.finished
     return root.workingForeground
   }
 
   function statusColor(session) {
-    if (!session || !session.running) return Qt.darker(root.foreground, 2.2)
-    if ((session.blocked || 0) > 0) return root.urgent
-    if ((session.done || 0) > 0) return root.finished
-    if ((session.working || 0) > 0) return root.workingForeground
-    return Qt.darker(root.foreground, 1.7)
+    if (!session || !session.running) return Qt.alpha(root.foreground, 0.62)
+    var p = priority(session)
+    if (p === "blocked") return root.urgent
+    if (p === "done") return root.finished
+    if (p === "working") return root.workingForeground
+    return Qt.alpha(root.foreground, 0.82)
   }
 
   function badgeColor() {
     if (appMark) return root.urgent
-    if (blockedCount > 0) return root.urgent
-    if (doneCount > 0) return root.finished
+    var p = priority({ blocked: blockedCount, done: doneCount, working: workingCount })
+    if (p === "blocked") return root.urgent
+    if (p === "done") return root.finished
     return root.working
   }
 
@@ -968,15 +934,20 @@ Item {
     return hiddenSessions > 0 ? hiddenSessions + " sessions not shown" : ""
   }
 
+  // Every part that is not zero, and the failures: the classic list failing
+  // is said next to the app counts, which stay true while it fails.
   function tooltipText() {
-    if (!reachable) return "Herdr: " + (errorText || "could not reach herdr")
-    var parts = [runningCount + (runningCount === 1 ? " herdr server" : " herdr servers"),
-                 agentCount + (agentCount === 1 ? " agent" : " agents")]
+    var parts = []
+    if (!reachable) parts.push(errorText || "could not reach herdr")
+    if (runningCount > 0) parts.push(runningCount + (runningCount === 1 ? " herdr server" : " herdr servers"))
+    if (agentCount > 0) parts.push(agentCount + (agentCount === 1 ? " agent" : " agents"))
     if (blockedCount > 0) parts.push(blockedCount + " waiting on you")
     if (doneCount > 0) parts.push(doneCount + " finished")
+    if (workingCount > 0) parts.push(workingCount + " working")
     if (unreadableCount > 0) parts.push(unreadableCount + " unreadable")
     if (appStale) parts.push("herdr-core not reachable")
-    return parts.join(", ")
+    if (parts.length === 0) return "Herdr: no sessions"
+    return reachable ? parts.join(", ") : "Herdr: " + parts.join(", ")
   }
 
   // A session name is only unique on its own host, so every key the UI
@@ -1024,16 +995,65 @@ Item {
     // place: the blink is about a question still standing, not about history.
     if (root.attentionKey !== "" && !wantingNow[root.attentionKey])
       root.attentionKey = ""
-    if (freshest !== null && root.attentionPrimed)
+    // Each new key starts an episode, which blinks for a minute.
+    if (freshest !== null && root.attentionPrimed) {
       root.attentionKey = tied ? "" : freshest.key
+      if (root.attentionKey !== "") {
+        root.blinkExpired = false
+        blinkTimer.restart()
+      }
+    }
+    if (root.attentionKey === "") blinkTimer.stop()
 
     root.wantingBefore = wantingNow
     root.attentionPrimed = true
   }
 
   function blinking(session, agent) {
-    if (!agent || root.attentionKey === "") return false
+    if (!agent || root.attentionKey === "" || root.blinkExpired) return false
     return root.agentKey(session, agent.pane) === root.attentionKey
+  }
+
+  Timer {
+    id: blinkTimer
+    interval: 60000
+    onTriggered: root.blinkExpired = true
+  }
+
+  // ---- text size ----
+
+  readonly property string textScalePath:
+    (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache"))
+    + "/omarchy-herdr/text-scale"
+
+  // Steps of a tenth between 0.8 and 1.6, rounded so twenty presses do not
+  // drift. Only a key press writes the file: a load never does, so two
+  // surfaces cannot feed each other.
+  function setTextScale(value) {
+    var v = Math.round(Math.max(0.8, Math.min(1.6, value)) * 10) / 10
+    textScale = v
+    textFile.setText(String(v))
+  }
+  function textBigger() { setTextScale(textScale + 0.1) }
+  function textSmaller() { setTextScale(textScale - 0.1) }
+  function textReset() { setTextScale(1.0) }
+
+  // Anything that is not a number in range leaves the size as it is.
+  function applyTextScale(text) {
+    var t = String(text).trim()
+    var v = t === "" ? NaN : Number(t)
+    if (isFinite(v) && v >= 0.8 && v <= 1.6) textScale = Math.round(v * 10) / 10
+  }
+
+  // The file is the one source of truth, watched so a change on another
+  // surface lands here. A failed write keeps the size for this session.
+  FileView {
+    id: textFile
+    path: root.textScalePath
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.applyTextScale(text())
+    onFileChanged: reload()
   }
 
   // ---- herdr-core and herdr-app ----------------------------------------
@@ -1267,7 +1287,6 @@ Item {
       // The list may still be the one from the last poll, so place the cursor
       // on what we know now and again when the fresh answer lands.
       cursor = bestRow()
-      column = root.columnRow
       cursorPlaced = false
     } else {
       // Closing stops every ssh call, including the ones still out, and
@@ -1279,7 +1298,6 @@ Item {
         if (poll) poll.running = false
       }
       cursor = -1
-      column = root.columnRow
       cursorPlaced = false
     }
   }

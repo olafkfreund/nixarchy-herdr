@@ -4,13 +4,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(`${__dirname}/../HerdrModel.qml`, 'utf8');
-const panel = fs.readFileSync(`${__dirname}/../Panel.qml`, 'utf8');
 const context = { root: { script: 'herdr-sessions' }, actionProc: {}, killProc: {}, dismiss() {},
                   activeCard: null, confirmTarget: null, confirmAction: '', confirmOpen: false,
                   sessions: [], hostState: { razer: 'ok', p620: 'ok' }, actionError: '',
                   settleTimer: { restart() {} }, actionFinished() {},
                   confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false,
-                  hcAvailable: true, blockedCount: 0, doneCount: 0 };
+                  hcAvailable: true, blockedCount: 0, doneCount: 0, workingCount: 0,
+                  blinkTimer: { restart() {}, stop() {} } };
 const appMark = source.match(/readonly property bool appMark: (.+)/);
 assert.ok(appMark, 'Missing appMark property');
 Object.defineProperty(context, 'appMark', { get() { return vm.runInContext(appMark[1], context); } });
@@ -22,8 +22,8 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
                     'blinking', 'updateAttention', 'refresh', 'applyHostPayload',
                     'launch', 'storeResult', 'complete', 'hostUnchecked', 'stateOfHost',
                     'sessionLabel', 'rowKey', 'navRowsFor', 'rowAt', 'sessionAt', 'rebuild',
-                    'bestRow', 'attentionRank', 'agentAt', 'lastColumnFor', 'clampColumn',
-                    'moveCursor', 'moveColumn', 'cycleColumn', 'cursorToAgent', 'cursorToSession',
+                    'bestRow', 'attentionRank', 'agentAt', 'priority',
+                    'moveCursor', 'cursorToAgent', 'cursorToSession',
                     'applyHosts', 'applyPayload', 'tooltipText', 'cleanTitle', 'pollInterval',
                     'newSession', 'hostSummary', 'countLabel', 'startFailed', 'finishRun',
                     'validHcAddress', 'requestNew', 'requestPrompt', 'requestInterrupt',
@@ -74,15 +74,6 @@ for (const host of [undefined, '', 'razer', 'p620']) {
   [context.appStale, context.hcAvailable, context.doneCount] = saved;
 }
 console.log('PASS: local and remote open, focus, fallback, kill and delete routing');
-{
-  const badgeText = panel.match(/text: (herd\.[^\n]+)/);
-  assert.ok(badgeText, 'Missing badge text expression');
-  const shown = (blockedCount, runningCount, appMark) =>
-    vm.runInNewContext(badgeText[1], { herd: { blockedCount, runningCount, appMark } });
-  assert.equal(shown(2, 3, true), 2, 'stale keeps classic blocked count');
-  assert.equal(shown(0, 3, true), 3, 'stale keeps classic running count');
-  assert.equal(shown(0, 0, true), '!', 'stale with no count shows failure mark');
-}
 
 // A session name is only unique on its own host. Keyed by name alone, acting
 // on the local "3" dimmed razer's "3" too, and razer's agent asking blinked
@@ -132,7 +123,6 @@ console.log('PASS: delete asks first, then deletes on confirm');
   const routes = {
     'Card.qml onDeleteRequested': card.match(/onDeleteRequested: \{[^]*?\n  \}/),
     'Card.qml trash button': card.match(/iconText: panel\.iconTrash[^]*?onClicked: [^\n]*/),
-    'HerdrModel.qml destroy column': source.match(/if \(column === root\.columnDestroy\) \{[^]*?\n    \}/),
   };
   for (const [what, match] of Object.entries(routes)) {
     assert.ok(match, `Missing route: ${what}`);
@@ -212,11 +202,10 @@ const fresh = () => {
     actionProc: { running: false, kind: 'action' }, killProc: { running: false, kind: 'kill' },
     actionError: '', actionName: '', actionDismiss: false, pendingKey: '', killPendingKey: '',
     hostState: { razer: 'ok' }, hostNames: [], hostSessions: {}, sessions: [], localSessions: [],
-    remote: true, opened: true, pollGen: 0, cursor: -1, column: 0, cursorPlaced: false,
+    remote: true, opened: true, pollGen: 0, cursor: -1, cursorPlaced: false,
     reachable: true, errorText: '', hiddenSessions: 0, unreadableCount: 0,
     runningCount: 0, blockedCount: 0, workingCount: 0, doneCount: 0, agentCount: 0,
-    confirmOpen: false, confirmTarget: null, confirmAction: '', columnRow: 0, columnOpen: 1,
-    columnDestroy: 2,
+    confirmOpen: false, confirmTarget: null, confirmAction: '',
   });
   context.dismissed = 0; context.finished = [];
   context.dismiss = () => { context.dismissed++; };
@@ -449,7 +438,7 @@ console.log('PASS: applyHosts prunes what left');
   assert.match(context.tooltipText(), /1 unreadable/);
   assert.equal(context.countLabel({ running: true, agents: 3, hiddenAgents: 2 }), '3 agents (2 not shown)');
   context.reachable = false; context.errorText = 'boom';
-  assert.equal(context.tooltipText(), 'Herdr: boom');
+  assert.equal(context.tooltipText(), 'Herdr: boom, 1 herdr server, 1 unreadable', 'the classic error stands next to the counts');
 }
 console.log('PASS: the tooltip shows unreachable and unreadable');
 
@@ -484,170 +473,6 @@ console.log('PASS: an equal-seq tie blinks nobody');
 }
 console.log('PASS: a done-only list polls every 20 s');
 
-// Menu.qml: its input line, with stubs for the model, the field and the process.
-{
-  const menu = fs.readFileSync(`${__dirname}/../Menu.qml`, 'utf8');
-  const m = { Qt: { callLater() {} }, JSON };
-  m.root = { inputMode: '', promptTarget: null, promptReply: '', promptConfirmOpen: false,
-             newPending: false, awaitingExit: false, newHost: '', opened: true };
-  m.newField = { text: '', forceActiveFocus() {} };
-  m.card = { forceActiveFocus() {} };
-  m.promptConfirm = { selectedIndex: 0 }; m.confirmKeys = { forceActiveFocus() {} };
-  m.promptProc = { running: false };
-  m.herd = { actionError: '', script: 'herdr-sessions', started: [],
-    newSession(host, name) { this.started.push(name); return this.ok; }, ok: true,
-    agentBusy: () => false, targetStatus: () => 'idle', sessions: [],
-    sessionAt: () => ({ name: 's', host: '' }), agentAt: () => ({ pane: 'w1:p1', title: 't' }),
-    cleanTitle: (x) => x, hostAtCursor: () => '', cursor: 0 };
-  vm.createContext(m);
-  for (const name of ['beginInput', 'cancelInput', 'submitInput', 'submitNew', 'actionDone',
-                      'targetStatus', 'submitPrompt', 'storePrompt', 'promptDone', 'replyFrom', 'close',
-                      'promptStartFailed']) {
-    const match = menu.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
-    assert.ok(match, `Missing Menu function: ${name}`);
-    vm.runInContext(match[0], m);
-    m.root[name] = m[name];
-  }
-  const reset = () => {
-    Object.assign(m.root, { inputMode: '', promptTarget: null, promptReply: '', promptConfirmOpen: false,
-      newPending: false, awaitingExit: false, opened: true });
-    Object.assign(m.promptProc, { running: false, gotOut: false, gotExit: false });
-    m.newField.text = ''; m.herd.actionError = ''; m.herd.ok = true; m.herd.started = [];
-  };
-
-  // new: stays open and keeps its text on failure, closes on success
-  reset();
-  m.beginInput('new'); m.newField.text = 'dup';
-  m.submitNew();
-  assert.equal(m.root.newPending, true);
-  m.actionDone('kill', true);
-  assert.equal(m.root.newPending, true, 'a kill completion changes nothing');
-  assert.equal(m.root.opened, true);
-  m.actionDone('new', false);
-  assert.equal(m.root.newPending, false);
-  assert.equal(m.newField.text, 'dup');
-  assert.equal(m.root.inputMode, 'new');
-  m.submitNew(); m.actionDone('new', true);
-  assert.equal(m.root.opened, false);
-  assert.equal(m.root.inputMode, '');
-  reset(); m.beginInput('new'); m.newField.text = 'x'; m.herd.ok = false;
-  m.submitNew();
-  assert.equal(m.root.newPending, false, 'a refused start leaves the line editable');
-  console.log('PASS: a failed new keeps its text, a successful one closes, a kill changes nothing');
-
-  // prompt: failure keeps the text, success clears it, timeout says so
-  reset();
-  m.beginInput('prompt'); m.newField.text = 'hello';
-  m.submitPrompt(false);
-  assert.equal(m.promptProc.running, true);
-  assert.equal(m.newField.text, 'hello', 'text is not cleared on submit');
-  m.storePrompt('exit', 0); m.storePrompt('out', '{"ok":false,"error":"nope"}');
-  assert.equal(m.newField.text, 'hello');
-  assert.equal(m.root.promptReply, 'could not send: nope');
-  assert.equal(m.root.awaitingExit, false);
-  m.promptProc.running = false;
-  m.submitPrompt(false);
-  m.storePrompt('out', '{"ok":true,"status":"timeout","output":"\\u276f hello\\nworking"}'); m.storePrompt('exit', 0);
-  assert.equal(m.newField.text, '');
-  assert.match(m.root.promptReply, /^still working after 5 min\nworking$/);
-  console.log('PASS: a failed prompt keeps its text; a timeout is said on its own line');
-
-  // cancel, then resubmit before the old run has exited
-  reset();
-  m.beginInput('prompt'); m.newField.text = 'again';
-  m.submitPrompt(false);
-  m.cancelInput();
-  m.beginInput('prompt');
-  assert.equal(m.root.inputMode, '', 'beginInput refuses while a run is open');
-  assert.match(m.herd.actionError, /still waiting/);
-  m.root.inputMode = 'prompt'; m.root.promptTarget = { host: '', session: 's', pane: 'w1:p1', title: 't' };
-  m.promptProc.running = false; m.promptProc.command = null;
-  m.submitPrompt(true);
-  assert.equal(m.promptProc.running, false, 'a resubmit before onExited is refused');
-  m.root.inputMode = '';
-  m.storePrompt('out', '{"ok":true}'); m.storePrompt('exit', 0);
-  assert.equal(m.root.awaitingExit, false);
-  assert.equal(m.root.promptReply, '', 'a result for a cancelled line shows nothing');
-  console.log('PASS: cancel then resubmit before onExited is refused');
-
-  reset();
-  m.root.promptConfirmOpen = true;
-  m.close();
-  assert.equal(m.root.promptConfirmOpen, false);
-  assert.equal(m.root.opened, false);
-  console.log('PASS: close() clears promptConfirmOpen');
-
-  // beginInput leaves a pending `new` alone, and a prompt that cannot start
-  // unlocks the line with its text kept.
-  reset();
-  m.beginInput('new'); m.newField.text = 'keepme';
-  m.submitNew();
-  m.beginInput('prompt');
-  assert.equal(m.root.inputMode, 'new');
-  assert.equal(m.newField.text, 'keepme');
-  assert.match(m.herd.actionError, /busy: new/);
-  reset();
-  m.root.inputMode = 'prompt'; m.root.promptTarget = { host: '', session: 's', pane: 'w1:p1', title: 't' };
-  m.newField.text = 'hello';
-  m.submitPrompt(true);
-  assert.equal(m.root.awaitingExit, true);
-  m.promptProc.running = false;                   // the start failed
-  m.promptStartFailed();
-  assert.equal(m.root.awaitingExit, false);
-  assert.equal(m.newField.text, 'hello');
-  assert.match(m.root.promptReply, /could not start/);
-  console.log('PASS: a pending new is not overwritten; a prompt that cannot start unlocks');
-
-  // An app agent: the target is captured with its kind, and survives the cursor moving.
-  const appRow = { kind: 'app', name: 'space', spaceId: 'sp1', host: 'razer',
-    agentList: [{ pane: 'razer/t3', title: 'lead', status: 'idle' }] };
-  Object.assign(m.herd, { sessions: [appRow], sessionAt: () => appRow, agentAt: () => appRow.agentList[0],
-    hostAtCursor: () => 'razer', notLive: false, asked: [],
-    appRowNotLive(x) { this.asked.push(x); return this.notLive; },
-    newAppSpace(host, name, dir) { this.started.push(['app', host, name, dir]); return true; } });
-  reset();
-  m.beginInput('prompt');
-  Object.assign(m.herd, { sessionAt: () => ({ name: 'other', host: '' }), agentAt: () => ({ pane: 'w1:p1', title: 'x' }) });
-  assert.deepEqual({ ...m.root.promptTarget },
-    { kind: 'app', host: 'razer', session: 'sp1', pane: 'razer/t3', title: 'lead' });
-  assert.equal(m.targetStatus(), 'idle', 'the captured app target is read, not the cursor');
-  appRow.agentList[0].status = 'working';
-  assert.equal(m.targetStatus(), 'working');
-
-  // --force only after the busy confirmation; never through --host
-  m.newField.text = 'go';
-  m.herd.agentBusy = (st) => st === 'working';
-  m.submitPrompt(false);
-  assert.equal(m.root.promptConfirmOpen, true);
-  assert.equal(m.promptProc.running, false, 'busy asks first');
-  m.root.promptConfirmOpen = false;
-  m.submitPrompt(true);
-  assert.deepEqual(Array.from(m.promptProc.command), ['herdr-sessions', 'app-prompt', 'razer/t3', '--force']);
-  m.promptProc.running = false; m.root.awaitingExit = false;
-  appRow.agentList[0].status = 'idle';
-  m.submitPrompt(false);
-  assert.deepEqual(Array.from(m.promptProc.command), ['herdr-sessions', 'app-prompt', 'razer/t3']);
-
-  // a row that went not-live while typing is refused by the model
-  m.promptProc.running = false; m.promptProc.command = null; m.root.awaitingExit = false;
-  m.herd.notLive = true;
-  m.submitPrompt(false);
-  assert.equal(m.promptProc.command, null);
-  assert.deepEqual({ ...m.herd.asked.at(-1) }, { kind: 'app', host: 'razer' });
-  m.herd.notLive = false; m.herd.agentBusy = () => false;
-
-  // n on an app row goes to the app path with the captured host
-  reset();
-  Object.assign(m.herd, { sessionAt: () => appRow });
-  m.beginInput('new'); m.newField.text = 'proj /home/x';
-  m.submitNew();
-  assert.deepEqual(m.herd.started.map((x) => Array.from(x)), [['app', 'razer', 'proj', '/home/x']]);
-  assert.equal(m.root.newKind, 'app');
-  Object.assign(m.herd, { sessionAt: () => ({ name: 's', host: '' }), hostAtCursor: () => '' });
-  reset(); m.beginInput('new'); m.newField.text = 'plain'; m.submitNew();
-  assert.deepEqual(Array.from(m.herd.started), ['plain'], 'a classic row still makes a session');
-  console.log('PASS: an app prompt and new route to the app path with captured targets');
-}
 
 // herdr-core and herdr-app: the subscription, the sources, the keys, the
 // kind-aware actions and the "not live" refusals.
@@ -669,7 +494,7 @@ console.log('PASS: a done-only list polls every 20 s');
       activeCard: { beginConfirm() { context.beginConfirms++; }, endConfirm() {} },
       newSessionRequested() { context.emitted++; }, promptRequested() { context.prompts++; },
     });
-    Object.assign(context.root, { columnRow: 0, columnOpen: 1, columnDestroy: 2, urgent: 'URGENT' });
+    Object.assign(context.root, { urgent: 'URGENT' });
     context.urgent = 'URGENT';
   };
   const listOut = (rows, machines = []) => JSON.stringify({ ok: true, error: '', sessions: rows, machines });
@@ -810,9 +635,6 @@ console.log('PASS: a done-only list polls every 20 s');
   assert.deepEqual(last(), ['herdr-sessions', 'app-new', 'proj', '/home/x', '']);
   finish(context.actionProc, '{"ok":true}', 0);
   assert.equal(context.newAppSpace('', 'bad name', ''), false);
-  assert.equal(context.lastColumnFor(row), 1, 'no destroy column on an app row');
-  context.column = 2; context.activateCursor();
-  assert.equal(context.confirmOpen, false, 'the destroy column does nothing on an app row');
   context.askDelete(row);
   assert.equal(context.confirmOpen, false);
   console.log('PASS: app rows dispatch to the app subcommands with the right arguments');
