@@ -20,6 +20,9 @@ stop_bg() {
   # The child first: killing its bash alone would leave the sleep behind.
   for p in "${bg[@]}"; do pkill -P "$p"; kill "$p"; wait "$p"; done 2>/dev/null
   bg=()
+  if [[ -f ${FAKE_APP_PID_FILE-} ]]; then
+    kill "$(cat "$FAKE_APP_PID_FILE")" 2>/dev/null || true
+  fi
 }
 trap 'stop_bg; rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/home" "$tmp/run"
@@ -29,6 +32,11 @@ export HOME="$tmp/home" XDG_RUNTIME_DIR="$tmp/run" XDG_CACHE_HOME="$tmp/home/.ca
 export PATH="$tmp/bin:$PATH"
 export FAKE_LOG="$tmp/log" FAKE_CLIENTS="$tmp/clients"
 export FAKE_PROC_DIR="$tmp/proc" FAKE_KILL_LOG="$tmp/kill-log"
+export FAKE_HC_ARGS="$tmp/hc-args" FAKE_APP_ARGS="$tmp/app-args"
+export FAKE_APP_PID_FILE="$tmp/app-pid" FAKE_APP_OPEN="$tmp/app-open"
+export FAKE_APP_ERROR_ONCE_FILE="$tmp/app-error-once"
+export FAKE_REAL_PGREP
+FAKE_REAL_PGREP=$(command -v pgrep)
 # Anything herdr set in the calling shell is not the fake's business.
 for var in ${!HERDR_@}; do unset "$var"; done
 
@@ -107,6 +115,7 @@ if [ "$1" = clients ]; then
   sleep "${FAKE_CLIENTS_SLEEP:-0}"
   cat "$FAKE_CLIENTS"
 elif [ "$1" = dispatch ]; then
+  printf 'dispatch %s\n' "$2" >> "$FAKE_LOG"
   exit "${FAKE_DISPATCH_RC:-0}"
 else echo "[]"; fi
 FAKE
@@ -117,6 +126,20 @@ FAKE
 cat > "$tmp/bin/hc" <<'FAKE'
 #!/bin/bash
 printf 'hc-pid %s %s\n' "$$" "$*" >> "$FAKE_LOG"
+if [[ $1 != events && $1 != machine ]]; then
+  printf 'hc-call %s\n' "$1" >> "$FAKE_LOG"
+  printf '%s\0' "$@" > "$FAKE_HC_ARGS.$1"
+  if [[ $1 == send && -n ${FAKE_HC_SEND_SLEEP-} ]]; then exec sleep "$FAKE_HC_SEND_SLEEP"; fi
+  cmd=${1^^}
+  rc_var="FAKE_HC_${cmd}_RC"
+  out_var="FAKE_HC_${cmd}_OUT"
+  if [[ ${!rc_var:-0} != 0 ]]; then
+    printf '{"error":{"kind":"blocked","message":"hc %s refused","hint":"retry"}}\n' "$1" >&2
+    exit "${!rc_var}"
+  fi
+  printf '%s\n' "${!out_var-}"
+  exit
+fi
 case "$1 $2" in
   'events --json')
     if [[ -n ${FAKE_HC_SNAPSHOT_BYTES-} ]]; then
@@ -130,11 +153,40 @@ esac
 FAKE
 cat > "$tmp/bin/herdr-app" <<'FAKE'
 #!/bin/bash
+if [[ $# == 0 ]]; then
+  printf '%s\n' "$$" > "$FAKE_APP_PID_FILE"
+  jq -n --argjson pid "$$" '[{pid:$pid,address:"0x99",workspace:{name:"1"}}]' > "$FAKE_CLIENTS"
+  : > "$FAKE_APP_OPEN"
+  exec sleep 30
+fi
+if [[ $1 == do ]]; then
+  printf 'app-call %s\n' "$2" >> "$FAKE_LOG"
+  printf '%s\0' "$@" > "$FAKE_APP_ARGS.$2"
+  if [[ -n ${FAKE_APP_DO_ERROR_ONCE-} && ! -e $FAKE_APP_ERROR_ONCE_FILE ]]; then
+    : > "$FAKE_APP_ERROR_ONCE_FILE"
+    printf '{"error":"%s"}\n' "$FAKE_APP_DO_ERROR_ONCE"
+    exit 1
+  fi
+  if [[ -n ${FAKE_APP_DO_ERROR-} ]]; then
+    printf '{"error":"%s"}\n' "$FAKE_APP_DO_ERROR"
+    exit 1
+  fi
+  printf '{"id":"sp1"}\n'
+  exit
+fi
+if [[ -e $FAKE_APP_OPEN ]]; then printf '%s\n' "$FAKE_APP_LS"; exit; fi
 case ${FAKE_APP_LS_FAIL-} in
   refused) echo 'Connection refused' >&2; exit 1 ;;
   other) echo 'unexpected failure' >&2; exit 1 ;;
 esac
 printf '%s\n' "$FAKE_APP_LS"
+FAKE
+cat > "$tmp/bin/pgrep" <<'FAKE'
+#!/bin/bash
+if [[ $1 == -x && ${2-} == herdr-app ]]; then
+  [[ -z ${FAKE_APP_PIDS-} ]] || printf '%s\n' "$FAKE_APP_PIDS"
+  [[ ! -f $FAKE_APP_PID_FILE ]] || cat "$FAKE_APP_PID_FILE"
+else exec "$FAKE_REAL_PGREP" "$@"; fi
 FAKE
 cat > "$tmp/bin/kill" <<'FAKE'
 #!/bin/bash
@@ -174,7 +226,7 @@ FAKE
 # The launcher tries the desktop's terminal first (#18), so it is faked as
 # well: a test must never open a real window. Same knob as foot.
 cp "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
-chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/hc" "$tmp/bin/herdr-app" "$tmp/bin/kill" \
+chmod +x "$tmp/bin/herdr" "$tmp/bin/ssh" "$tmp/bin/hyprctl" "$tmp/bin/ss" "$tmp/bin/hc" "$tmp/bin/herdr-app" "$tmp/bin/pgrep" "$tmp/bin/kill" \
   "$tmp/bin/setsid" "$tmp/bin/uwsm-app" "$tmp/bin/foot" "$tmp/bin/xdg-terminal-exec"
 
 failed=0
@@ -187,6 +239,11 @@ check() {
 
 # Each case starts with a clean log and the fake's defaults.
 reset() {
+  if [[ -f $FAKE_APP_PID_FILE ]]; then
+    kill "$(cat "$FAKE_APP_PID_FILE")" 2>/dev/null || true
+  fi
+  rm -f -- "$FAKE_APP_PID_FILE" "$FAKE_APP_OPEN" "$FAKE_APP_ERROR_ONCE_FILE" \
+    "$FAKE_HC_ARGS".* "$FAKE_APP_ARGS".*
   : > "$FAKE_LOG"
   : > "$FAKE_KILL_LOG"
   echo "[]" > "$FAKE_CLIENTS"
@@ -197,12 +254,19 @@ reset() {
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
     FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE \
     FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC \
-    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON
+    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON \
+    FAKE_HC_SEND_OUT FAKE_HC_SEND_RC FAKE_HC_SEND_SLEEP FAKE_HC_READ_OUT FAKE_HC_READ_RC \
+    FAKE_HC_INTERRUPT_OUT FAKE_HC_INTERRUPT_RC FAKE_HC_KILL_OUT FAKE_HC_KILL_RC \
+    FAKE_APP_DO_ERROR FAKE_APP_DO_ERROR_ONCE FAKE_APP_PIDS
   mkdir -p "$HOME/.config/herdr-app"
   rm -f -- "$HOME/.config/herdr-app/view.json"
   export FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[]}'
   export FAKE_HC_MACHINES='{"machines":[]}'
   export FAKE_APP_LS='{"spaces":[]}'
+  export FAKE_HC_SEND_OUT='{"started":true,"status":"working","turn":1,"wait":{"reason":"status","ended":true,"status":"idle","exit_code":0}}'
+  export FAKE_HC_READ_OUT='screen'
+  export FAKE_HC_INTERRUPT_OUT='{"key":"t1","outcome":"stopped"}'
+  export FAKE_HC_KILL_OUT='{}'
   local var
   for var in ${!FAKE_SNAPSHOT_BODY_@} ${!FAKE_SNAPSHOT_SLEEP_@}; do unset "$var"; done
 }
@@ -914,6 +978,185 @@ check "66 app list without hc" jq -e '.error == "could not read herdr-core"' <<<
 "$script" demo on >/dev/null
 out=$("$script" app-list)
 check "67 app demo" jq -e '.sessions[0].kind == "app" and .sessions[0].agentList[0].pane == "t1"' <<<"$out"
+"$script" demo off >/dev/null
+
+reset
+out=$(printf '%s' $'-first\nsecond' | "$script" app-prompt t1 --force)
+mapfile -d '' -t send_args < "$FAKE_HC_ARGS.send"
+check "68 prompt keeps text and force" test "${send_args[0]} ${send_args[1]} ${send_args[2]} ${send_args[3]} ${send_args[4]}" = \
+  'send --json --wait --force --'
+check "68 prompt text is one argument" test "${send_args[5]}" = t1 &&
+  check "68 prompt multiline intact" test "${send_args[6]}" = $'-first\nsecond'
+check "68 prompt maps status and read" jq -e '.ok and .status == "idle" and .output == "screen\n"' <<<"$out"
+out=$(printf hi | "$script" app-prompt razer/t1)
+mapfile -d '' -t send_args < "$FAKE_HC_ARGS.send"
+check "69 prompt without force" test "${send_args[3]}" = --
+check "69 remote address through hc" test "${send_args[4]}" = razer/t1
+
+for reason in status exit timeout output not_started; do
+  reset
+  FAKE_HC_SEND_OUT=$(jq -nc --arg reason "$reason" \
+    '{started:true,status:"working",turn:1,wait:{reason:$reason,ended:true,status:"blocked",exit_code:0}}')
+  out=$(printf hi | "$script" app-prompt t1)
+  if [[ $reason == not_started ]]; then
+    check "70 $reason" jq -e '.ok == false and .error == "the agent did not start the turn"' <<<"$out"
+  else
+    want=$reason
+    [[ $reason != status && $reason != exit ]] || want=blocked
+    # shellcheck disable=SC2016 # $want is a jq variable
+    check "70 $reason" jq -e --arg want "$want" '.ok and .status == $want' <<<"$out"
+  fi
+done
+
+for outcome in stopped exited still_working unknown; do
+  reset
+  FAKE_HC_INTERRUPT_OUT=$(jq -nc --arg outcome "$outcome" '{key:"t1",outcome:$outcome}')
+  out=$("$script" app-interrupt t1)
+  case $outcome in
+    still_working) want='still working' ;;
+    unknown) want="it doesn't report status" ;;
+    *) want='' ;;
+  esac
+  # shellcheck disable=SC2016 # $note is a jq variable
+  check "71 interrupt $outcome" jq -e --arg note "$want" '.ok and (.note // "") == $note' <<<"$out"
+done
+
+for rc in 3 9 11 124; do
+  reset
+  out=$(printf hi | FAKE_HC_SEND_RC=$rc "$script" app-prompt t1)
+  if [[ $rc == 124 ]]; then want='timed out: prompt'; else want='hc send refused'; fi
+  # shellcheck disable=SC2016 # $want is a jq variable
+  check "72 hc exit $rc" jq -e --arg want "$want" '.error == $want' <<<"$out"
+done
+
+reset
+FAKE_HC_SEND_SLEEP=30 "$script" app-prompt t1 <<<hi >/dev/null &
+prompt_script_pid=$!
+send_pid=""
+for ((i = 0; i < 50; i++)); do
+  send_pid=$(awk '$1 == "hc-pid" && $3 == "send" {print $2; exit}' "$FAKE_LOG")
+  [[ -n $send_pid ]] && break
+  sleep 0.05
+done
+kill -TERM "$prompt_script_pid" 2>/dev/null || true
+wait "$prompt_script_pid" 2>/dev/null || true
+check "72 cancelled hc send stopped" test -n "$send_pid" &&
+  check "72 cancelled hc child gone" test ! -e "/proc/$send_pid"
+
+reset
+FAKE_HC_SNAPSHOT=$(jq -nc '{seq:1,terminals:[
+  {address:"t1",state:"live",status:{state:"idle",kind:null},parent:null,
+   die_with_parent:false,labels:{"herdr.space":"sp"},title:"root",argv:[],status_ms:1},
+  {address:"t2",state:"live",status:null,parent:"t1",die_with_parent:true,
+   labels:{},title:"child",argv:[],status_ms:0}]}')
+out=$("$script" app-kill t1 '')
+check "73 changed cascade" jq -e '.ok == false and .changed and .cascadeKey == "t2" and .cascade[0].title == "child"' <<<"$out"
+check "73 stale key never kills" test -z "$(rg '^hc-call kill$' "$FAKE_LOG")"
+out=$("$script" app-kill t1 t2)
+check "73 current key kills" jq -e '.ok == true' <<<"$out"
+check "73 kill reached hc" rg -q '^hc-call kill$' "$FAKE_LOG"
+
+reset
+for addr in '-' 't' 'foo!/t1' 'razer/t1234567890' 'razer/t1/extra'; do
+  out=$("$script" app-interrupt "$addr")
+  check "74 invalid address $addr" jq -e '.ok == false' <<<"$out"
+done
+out=$("$script" app-kill t1 't2,')
+check "74 invalid cascade key" jq -e '.ok == false' <<<"$out"
+out=$("$script" app-kill t1)
+check "74 missing cascade key" jq -e '.ok == false' <<<"$out"
+out=$("$script" --host razer app-interrupt t1)
+check "74 app commands are local" jq -e '.ok == false and (.error | contains("locally"))' <<<"$out"
+
+reset
+FAKE_APP_LS_FAIL=refused
+export FAKE_APP_LS_FAIL
+out=$(umask 022; "$script" app-focus t1)
+check "75 start and focus" jq -e '.ok == true' <<<"$out"
+check "75 started window survives cleanup" test -f "$FAKE_APP_PID_FILE" &&
+  check "75 started window alive" kill -0 "$(cat "$FAKE_APP_PID_FILE")"
+check "75 focused by address" rg -q "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+check "75 app focus call" rg -q '^app-call agent.focus$' "$FAKE_LOG"
+
+reset
+FAKE_APP_LS_FAIL=refused FAKE_APP_DO_ERROR_ONCE='Connection refused'
+export FAKE_APP_LS_FAIL FAKE_APP_DO_ERROR_ONCE
+out=$("$script" app-focus t1)
+check "75 startup focus retries" jq -e '.ok == true' <<<"$out"
+check "75 focus attempted twice" test "$(rg -c '^app-call agent.focus$' "$FAKE_LOG")" = 2
+
+reset
+cp -a "$tmp/bin" "$tmp/bin-no-uwsm"
+rm -f -- "$tmp/bin-no-uwsm/uwsm-app"
+FAKE_APP_LS_FAIL=refused
+export FAKE_APP_LS_FAIL
+out=$(PATH="$tmp/bin-no-uwsm:$(dirname "$(command -v jq)"):/usr/bin:/bin" "$script" app-focus t1)
+check "75 starts without uwsm" jq -e '.ok == true' <<<"$out"
+check "75 no uwsm wrapper" test -z "$(rg '^uwsm-launched$' "$FAKE_LOG")"
+
+reset
+fake_client herdr-app cli
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS FAKE_APP_LS_FAIL=refused
+out=$("$script" app-focus t1)
+stop_bg
+check "76 CLI-only app is not a window" jq -e '.ok == true' <<<"$out"
+check "76 CLI-only starts window" rg -q "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+
+reset
+fake_client herdr-app window
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS
+fake_windows "${bg[-1]}" 2
+out=$("$script" app-focus t1)
+stop_bg
+check "77 two windows refused" jq -e '.error == "more than one herdr-app window"' <<<"$out"
+check "77 no focus action" test -z "$(rg '^app-call agent.focus$' "$FAKE_LOG")"
+
+reset
+fake_client herdr-app window
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS
+fake_windows "${bg[-1]}" 1
+FAKE_APP_DO_ERROR='app says no'
+export FAKE_APP_DO_ERROR
+out=$("$script" app-focus t1)
+stop_bg
+check "78 app error decoded" jq -e '.error == "app says no"' <<<"$out"
+
+reset
+fake_client herdr-app window
+FAKE_APP_PIDS=${bg[-1]}
+export FAKE_APP_PIDS
+fake_windows "${bg[-1]}" 1
+out=$("$script" app-new alpha /tmp razer)
+mapfile -d '' -t app_args < "$FAKE_APP_ARGS.space.new"
+check "79 new all arguments" test "${app_args[*]}" = 'do space.new --name alpha --folder /tmp --machine razer'
+check "79 new succeeded" jq -e '.ok == true' <<<"$out"
+out=$("$script" app-new alpha '' razer)
+mapfile -d '' -t app_args < "$FAKE_APP_ARGS.space.new"
+check "79 new empty dir" test "${app_args[*]}" = 'do space.new --name alpha --machine razer'
+out=$("$script" app-new alpha /tmp '')
+mapfile -d '' -t app_args < "$FAKE_APP_ARGS.space.new"
+check "79 new empty machine" test "${app_args[*]}" = 'do space.new --name alpha --folder /tmp'
+stop_bg
+
+for args in 'bad/name||' 'ok|relative|' 'ok||bad/name'; do
+  IFS='|' read -r name dir machine <<< "$args"
+  out=$("$script" app-new "$name" "$dir" "$machine")
+  check "80 new invalid $args" jq -e '.ok == false' <<<"$out"
+done
+out=$("$script" app-new alpha /tmp)
+check "80 new requires three arguments" jq -e '.ok == false' <<<"$out"
+
+reset
+"$script" demo on >/dev/null
+for action in 'app-focus t1' 'app-prompt t1' 'app-interrupt t1' 'app-kill t1 t2' 'app-new alpha /tmp razer'; do
+  read -r -a words <<< "$action"
+  out=$("$script" "${words[@]}")
+  check "81 demo $action" jq -e '.ok == true' <<<"$out"
+done
+check "81 demo touched no hc" test -z "$(rg '^hc-call ' "$FAKE_LOG")"
 "$script" demo off >/dev/null
 
 exit "$failed"

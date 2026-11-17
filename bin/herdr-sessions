@@ -322,7 +322,8 @@ app_merge_jq=$(cat <<'JQ'
       (if $windowOpen == true and $appStatus[.address] != null then $appStatus[.address]
        elif .status.state == "done" and $attention[.address].word == "done" and
             $attention[.address].seen == true then "idle"
-       else .status.state end)}] as $agents
+       else .status.state end)}]
+  | if $targetAddr == "" then . else map(select(.address == $targetAddr)) end as $agents
   | ($agents | group_by([.machine, .spaceId]) | map(
       . as $group | ($group[0]) as $first
       | ($group | sort_by(.address) | .[0:$agentCap] | map(
@@ -349,7 +350,7 @@ JQ
 )
 
 cmd_app_list() {
-  local remote=false machines='{"machines":[]}' job out
+  local remote=false machines='{"machines":[]}' job out target=${2-}
   [[ ${1-} == --remote ]] && remote=true
   app_snapshot
   printf '{"spaces":[]}' > "$RUN_DIR/app-ls.json"
@@ -368,6 +369,7 @@ cmd_app_list() {
   fi
   printf '%s' "$machines" > "$RUN_DIR/machines.json"
   out=$(jq -c --argjson remote "$remote" --argjson agentCap "$AGENT_COUNT_CAP" \
+    --arg targetAddr "$target" \
     --slurpfile appIn "$RUN_DIR/app-ls.json" \
     --slurpfile attentionIn "$RUN_DIR/attention.json" \
     --slurpfile windowIn "$RUN_DIR/window-open.json" \
@@ -1204,6 +1206,195 @@ remote_action() {
   printf '%s\n' "$out"
 }
 
+# App commands use hc's JSON errors, keeping its message instead of replacing
+# a refusal with a generic failure. The output file also keeps screen text off
+# the command line and under the same read ceiling as classic agent output.
+hc_call() {
+  local action=$1 limit=$2 rc=0 err pid
+  shift 2
+  run_dir_init || die "could not make a temporary directory"
+  (
+    local producer_rc=0
+    bounded "$limit" hc "$@" 2> "$RUN_DIR/hc-error" |
+      head -c "$((SNAPSHOT_BYTE_CAP + 1))" > "$RUN_DIR/hc-out" || producer_rc=${PIPESTATUS[0]}
+    exit "$producer_rc"
+  ) &
+  pid=$!
+  JOB_PIDS+=("$pid")
+  wait "$pid" || rc=$?
+  JOB_PIDS=()
+  [[ $(wc -c < "$RUN_DIR/hc-out") -le $SNAPSHOT_BYTE_CAP ]] ||
+    die "hc answered with too much to read safely"
+  timed_out "$rc" && die "timed out: $action"
+  if (( rc != 0 )); then
+    err=$(head -c 4096 "$RUN_DIR/hc-error" | jq -r '.error.message // empty' 2>/dev/null) || true
+    die "${err:-herdr-core could not $action}"
+  fi
+}
+
+app_do() {
+  local action=$1 limit=$2 rc=0 out err
+  shift 2
+  run_dir_init || die "could not make a temporary directory"
+  out=$(bounded "$limit" herdr-app 'do' "$@" 2> "$RUN_DIR/app-error" |
+    head -c "$((SESSION_FILE_CAP + 1))"; exit "${PIPESTATUS[0]}") || rc=$?
+  over_byte_cap "$out" "$SESSION_FILE_CAP" && die "herdr-app answered with too much to read safely"
+  timed_out "$rc" && die "timed out: $action"
+  if ! err=$(printf '%s' "$out" |
+    jq -r 'if type == "object" then (.error // "") else error("not an object") end' 2>/dev/null); then
+    APP_ERROR="unexpected reply from herdr-app"
+    return 1
+  fi
+  if (( rc != 0 )) || [[ -n $err ]]; then
+    APP_ERROR=${err:-herdr-app could not $action}
+    return 1
+  fi
+}
+
+# The CLI process can exist without a window. Only a PID present in both
+# pgrep and Hyprland is a window to raise.
+app_window_match() {
+  local pids clients matches
+  pids=$(bounded 2 pgrep -x herdr-app 2>/dev/null) || true
+  [[ -n $pids ]] || return 1
+  clients=$(bounded 2 hyprctl clients -j 2>/dev/null |
+    head -c "$((WINDOWS_BYTE_CAP + 1))"; exit "${PIPESTATUS[0]}") || return 1
+  over_byte_cap "$clients" "$WINDOWS_BYTE_CAP" && return 1
+  matches=$(printf '%s' "$clients" | jq -cr --rawfile pids <(printf '%s\n' "$pids") '
+    ($pids | split("\n") | map(select(test("^[0-9]+$")) | tonumber)) as $ids
+    | [.[] | select(.pid as $pid | $ids | index($pid) != null)]
+    | .[] | "\(.address)\t\(.workspace.name // "")"' 2>/dev/null) || return 1
+  [[ -n $matches ]] || return 1
+  [[ $matches != *$'\n'* ]] || return 2
+  printf '%s' "$matches"
+}
+
+app_raise_window() {
+  local match address workspace rc=0
+  match=$(app_window_match) || rc=$?
+  (( rc != 2 )) || die "more than one herdr-app window"
+  (( rc == 0 )) || die "could not find herdr-app window"
+  IFS=$'\t' read -r address workspace <<< "$match"
+  [[ $address =~ ^0x[0-9a-fA-F]+$ ]] || die "could not focus the window"
+  if [[ $workspace =~ ^(special:)?[A-Za-z0-9_-]{1,32}$ ]]; then
+    bounded 2 hyprctl dispatch "hl.dsp.focus({ workspace = '$workspace' })" >/dev/null 2>&1 ||
+      die "could not focus the window"
+  fi
+  bounded 2 hyprctl dispatch "hl.dsp.focus({ window = 'address:$address' })" >/dev/null 2>&1 ||
+    die "could not focus the window"
+}
+
+app_start_window() {
+  local rc=0
+  app_window_match >/dev/null || rc=$?
+  (( rc != 2 )) || die "more than one herdr-app window"
+  (( rc != 0 )) || return 0
+  local -a launch=(setsid)
+  if command -v uwsm-app >/dev/null 2>&1; then launch+=(uwsm-app --); fi
+  (umask "$INHERITED_UMASK"; exec "${launch[@]}" herdr-app) </dev/null >/dev/null 2>&1 &
+  local pid=$! deadline=$((SECONDS + 5))
+  disown "$pid" 2>/dev/null || true
+  run_dir_init || die "could not make a temporary directory"
+  while (( SECONDS <= deadline )); do
+    app_window_status
+    [[ $(cat "$RUN_DIR/window-open.json") == true ]] && return 0
+    sleep 0.2
+  done
+  die "could not open herdr-app"
+}
+
+valid_cascade_key() {
+  ! over_byte_cap "$1" 4096 || return 1
+  [[ -z $1 ]] && return 0
+  [[ $1 != ,* && $1 != *, && $1 != *,,* ]] || return 1
+  local addr
+  local -a addresses
+  IFS=, read -r -a addresses <<< "$1"
+  for addr in "${addresses[@]}"; do valid_hc_address "$addr" || return 1; done
+}
+
+cmd_app_focus() {
+  local addr=${1-} deadline
+  valid_hc_address "$addr" || die "not an hc address"
+  deadline=$((SECONDS + 5))
+  app_start_window
+  while ! app_do focus 1 agent.focus --terminal "$addr"; do
+    [[ $APP_ERROR == *'Connection refused'* && $SECONDS -lt $deadline ]] || die "$APP_ERROR"
+    sleep 0.2
+  done
+  app_raise_window
+  printf '{"ok":true}\n'
+}
+
+cmd_app_prompt() {
+  local addr=${1-} force=${2-} text reason
+  valid_hc_address "$addr" || die "not an hc address"
+  [[ -z $force || $force == --force ]] || die "invalid prompt option"
+  text=$(head -c 16384)
+  text=$(printf '%s' "$text" | tr -d '\000-\010\013-\037\177')
+  [[ -n ${text//[[:space:]]/} ]] || die "nothing to send"
+  local -a args=(send --json --wait)
+  [[ -z $force ]] || args+=(--force)
+  args+=(-- "$addr" "$text")
+  hc_call prompt 300 "${args[@]}"
+  cp "$RUN_DIR/hc-out" "$RUN_DIR/send.json"
+  reason=$(jq -r '.wait.reason // empty' "$RUN_DIR/send.json" 2>/dev/null) || true
+  [[ $reason != not_started ]] || die "the agent did not start the turn"
+  case $reason in status|exit|timeout|output) ;; *) die "unexpected reply from herdr-core" ;; esac
+  hc_call read 4 read --lines 60 "$addr"
+  jq -nc --slurpfile send "$RUN_DIR/send.json" --rawfile output "$RUN_DIR/hc-out" \
+    --arg reason "$reason" '{ok:true, status:
+      (if $reason == "timeout" or $reason == "output" then $reason
+       else ($send[0].wait.status // "idle") end), output:$output}'
+}
+
+cmd_app_interrupt() {
+  local addr=${1-} out
+  valid_hc_address "$addr" || die "not an hc address"
+  hc_call interrupt 12 interrupt --json "$addr"
+  out=$(jq -cr 'if .outcome == "stopped" or .outcome == "exited" then {ok:true}
+    elif .outcome == "still_working" then {ok:true,note:"still working"}
+    elif .outcome == "unknown" then {ok:true,note:"it doesn\u0027t report status"}
+    else empty end' "$RUN_DIR/hc-out") || true
+  [[ -n $out ]] || die "unexpected reply from herdr-core"
+  printf '%s\n' "$out"
+}
+
+cmd_app_kill() {
+  local addr=${1-} key=${2-} fresh cascade current
+  [[ $# == 2 ]] || die "kill needs an address and cascade key"
+  valid_hc_address "$addr" || die "not an hc address"
+  valid_cascade_key "$key" || die "not a cascade key"
+  fresh=$(cmd_app_list --remote "$addr")
+  [[ $(printf '%s' "$fresh" | jq -r '.ok') == true ]] || die "could not read herdr-core"
+  cascade=$(printf '%s' "$fresh" | jq -c --arg addr "$addr" \
+    '[.sessions[].agentList[] | select(.pane == $addr) | .cascade][0] // empty')
+  [[ -n $cascade ]] || die "could not find that agent"
+  current=$(printf '%s' "$cascade" | jq -r 'map(.address) | join(",")')
+  if [[ $key != "$current" ]]; then
+    printf '%s' "$cascade" | jq -c --arg key "$current" \
+      '{ok:false, changed:true, cascade:., cascadeKey:$key}'
+    return
+  fi
+  hc_call kill 8 kill --json "$addr"
+  printf '{"ok":true}\n'
+}
+
+cmd_app_new() {
+  local name=${1-} dir=${2-} machine=${3-}
+  [[ $# == 3 ]] || die "new needs a name, directory and machine"
+  valid_session_name "$name" || die "not a session name"
+  [[ -z $dir || ( $dir == /* && $dir != *$'\n'* && ${#dir} -le 4096 ) ]] ||
+    die "directory must be an absolute path"
+  [[ -z $machine ]] || valid_host "$machine" || die "not a host name"
+  local -a args=(space.new --name "$name")
+  [[ -z $dir ]] || args+=(--folder "$dir")
+  [[ -z $machine ]] || args+=(--machine "$machine")
+  app_start_window
+  app_do new 2 "${args[@]}" || die "$APP_ERROR"
+  printf '{"ok":true}\n'
+}
+
 # ------------------------------------------------------------------- main
 
 # `--host H` first, checked before anything is built from it.
@@ -1231,6 +1422,11 @@ case "${1:-list}" in
     if demo_on; then
       printf '{"ok":true,"error":"","sessions":[{"kind":"app","name":"demo","host":"","spaceId":"demo","running":true,"readable":true,"stale":false,"agents":1,"blocked":0,"done":0,"working":1,"hiddenAgents":0,"agentList":[{"title":"Demo agent","status":"working","kind":null,"pane":"t1","tab":"","seq":0,"cascade":[],"cascadeKey":""}],"projects":[],"windowAddress":""}],"windowOpen":false,"machines":[]}\n'
     else cmd_app_list "${1-}"; fi ;;
+  app-focus|app-prompt|app-interrupt|app-kill|app-new)
+    action=${1#app-}; shift
+    [[ -z $HOST ]] || die "app commands run locally"
+    if demo_on; then printf '{"ok":true}\n'
+    else "cmd_app_$action" "$@"; fi ;;
   # Every write is a no-op while the demo is on, so a click during a shoot
   # cannot reach a real session.
   open) shift; if demo_on; then printf '{"ok":true}\n'; else cmd_open "${1-}"; fi ;;
