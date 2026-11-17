@@ -79,7 +79,8 @@ that does not answer never delays the rest. Nothing is installed on them.
 | `Tab` / `Shift+Tab` | Cycle through the row's buttons |
 | `Enter` / `Space` | Jump to the agent, open the session, or press the button you are on |
 | `o` | Open the session under the cursor |
-| `K` (Shift+k) | Kill that session's server; asks first, with Cancel selected |
+| `K` (Shift+k) | Kill that session's server, or end a desktop-app agent; asks first, with Cancel selected |
+| `i` | Interrupt the desktop-app agent under the cursor |
 | `x` | Delete a stopped session; asks first, with Cancel selected |
 | `r` | Refresh |
 | `Esc` | Close |
@@ -135,6 +136,21 @@ there:
 ```
 
 `bin/herdr-menu-keys --print` prints the same list in a terminal.
+
+## Desktop app (herdr-core)
+
+Agents run by the herdr desktop app (herdr-core, through `hc`) show up too.
+
+- **One row per space**, subtitled "desktop app", with its agents inside.
+- **Done and seen** follow the app window's attention: a finished agent you
+  have already looked at reads as idle.
+- **`i`** interrupts the agent. **`K`** ends it, and the confirmation names
+  every sub-agent that ends with it.
+- It never closes a space or stops the core.
+- **Remote agents** come from `hc machine ls`, in the menu only.
+- **Machines with only `hc`** (no herdr sessions) work.
+- **"not live"** shows on a row, and its actions are refused, when herdr-core
+  cannot be reached or its machine is not connected.
 
 ## What it shows
 
