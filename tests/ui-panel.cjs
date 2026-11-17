@@ -17,13 +17,14 @@ const src = fs.readFileSync(`${__dirname}/../Panel.qml`, 'utf8');
 
 // Width expression: chosen width wins, scale applies, screen room caps.
 {
-  const m = src.match(/readonly property real cardWidth: ([^\n]+)\n\s+(Math\.max[^\n]+)/);
+  const m = src.match(/readonly property real cardWidth: ([^\n]+)\n\s+(chosenWidth[^\n]+)/);
   assert.ok(m, 'Missing pin cardWidth expression');
   const expr = m[1] + ' ' + m[2];
   const w = (chosenWidth, root, roomWidth) =>
     vm.runInNewContext(expr, { Math, roomWidth, chosenWidth, root });
   const root = (scale) => ({ cardMinWidth: Math.round(210 * scale), cardWidth: Math.round(300 * scale) });
   assert.equal(w(500, root(1), 1000), 500, 'a chosen width wins');
+  assert.equal(w(240, root(1.6), 1000), 240, 'a chosen width below the scaled minimum is kept');
   assert.equal(w(0, root(1.6), 1000), 480, 'text scale applies without one');
   assert.equal(w(0, root(1.6), 400), 400, 'room on screen caps at 1.6');
 }

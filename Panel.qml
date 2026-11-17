@@ -367,8 +367,9 @@ Panel {
     readonly property real roomWidth: Math.max(root.cardMinWidth, width - edge * 2)
     readonly property real roomHeight: Math.max(root.cardMinHeight, height - edge * 2)
 
+    // A width the user chose wins over text size; only the default grows.
     readonly property real cardWidth: Math.min(roomWidth,
-      Math.max(root.cardMinWidth, chosenWidth > 0 ? chosenWidth : root.cardWidth))
+      chosenWidth > 0 ? chosenWidth : Math.max(root.cardMinWidth, root.cardWidth))
     readonly property real cardHeight: Math.min(roomHeight,
       Math.max(root.cardMinHeight, chosenHeight > 0
         ? chosenHeight : pinCard.bodyHeight + verticalInset))

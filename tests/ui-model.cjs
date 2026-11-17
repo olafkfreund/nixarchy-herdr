@@ -105,7 +105,7 @@ for (const bad of ['', 'abc', '1.5abc', '2', '0.5', 'NaN', '-1']) {
 const before = writes.length;
 ctx.applyTextScale('1.4\n'); assert.equal(ctx.textScale, 1.4);
 assert.equal(writes.length, before, 'a load never writes');
-assert.match(source, /onLoaded: root\.applyTextScale\(text\(\)\)/);
+assert.match(source, /onLoaded: root\.textFileLoaded\(text\(\)\)/);
 assert.match(source, /watchChanges: true[^]*?onFileChanged: reload\(\)/);
 console.log('PASS: text steps clamp, never drift, ignore garbage and do not write on load');
 
@@ -171,3 +171,23 @@ assert.doesNotMatch(source, /columnRow|columnOpen|columnDestroy|lastColumnFor|mo
 assert.doesNotMatch(source, /Qt\.darker/);
 assert.ok(fs.existsSync(`${__dirname}/../ConfirmOverlay.qml`));
 console.log('PASS: no column cursor, no Qt.darker, ConfirmOverlay exists');
+
+// A change during an in-flight read is queued and read once it finishes.
+{
+  const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+  const src = fs.readFileSync(`${__dirname}/../HerdrModel.qml`, 'utf8');
+  const ctx = { textReading: true, textReadAgain: false, applied: [], reloads: 0,
+    textFile: { reload() { ctx.reloads++ } }, applyTextScale(t) { ctx.applied.push(t) } };
+  vm.createContext(ctx);
+  for (const n of ['textFileChanged', 'textFileLoaded'])
+    vm.runInContext(src.match(new RegExp('  function ' + n + '\\([^]*?\\n  \\}'))[0], ctx);
+  ctx.textFileChanged();                 // change while the first read is out
+  assert.equal(ctx.reloads, 0, 'no reload while reading');
+  ctx.textFileLoaded('1.1');             // stale read lands
+  assert.equal(ctx.reloads, 1, 'the queued change is read');
+  ctx.textFileLoaded('1.2');
+  assert.deepEqual(ctx.applied, ['1.1', '1.2'], 'the final value is applied last');
+  ctx.textFileChanged(); assert.equal(ctx.reloads, 2, 'an idle change reloads at once');
+  ctx.textFileLoaded(null); assert.equal(ctx.textReading, false, 'a failed load clears the flag');
+  console.log('PASS: a change during a read is queued');
+}

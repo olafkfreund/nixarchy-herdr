@@ -78,7 +78,12 @@ assert.match(menu, /"waiting " \+ root\.waitSecs \+ " s \\u00b7 Esc cancels"/);
 console.log('PASS: the waiting timer stops on every exit');
 
 // source checks
-assert.match(menu, /height: Math\.min\(replyText\.implicitHeight, card\.bodyHeight \* 0\.4\)/);
+assert.match(menu, /height: Math\.min\(replyText\.implicitHeight, root\.replyBudget\)/);
+// The cap must not depend on the card or the input row, which are sized around it.
+{
+  const budget = menu.match(/readonly property real replyBudget: ([\s\S]*?)\n\n/)[1];
+  assert.doesNotMatch(budget, /card\.|newRow|replyBox|bodyHeight/, 'reply budget is independent of the card');
+}
 assert.match(menu, /Flickable \{\n\s+id: replyBox/);
 assert.doesNotMatch(menu, /replyFrom/);
 assert.doesNotMatch(menu, /Qt\.darker\([^)]*foreground/);

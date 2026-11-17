@@ -1022,6 +1022,9 @@ Item {
 
   // ---- text size ----
 
+  // A read is in flight from start; a change during one is read after it.
+  property bool textReading: true
+  property bool textReadAgain: false
   readonly property string textScalePath:
     (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache"))
     + "/omarchy-herdr/text-scale"
@@ -1039,6 +1042,17 @@ Item {
   function textReset() { setTextScale(1.0) }
 
   // Anything that is not a number in range leaves the size as it is.
+  function textFileChanged() {
+    if (textReading) { textReadAgain = true; return }
+    textReading = true
+    textFile.reload()
+  }
+  function textFileLoaded(text) {
+    textReading = false
+    if (text !== null) applyTextScale(text)
+    if (textReadAgain) { textReadAgain = false; textReading = true; textFile.reload() }
+  }
+
   function applyTextScale(text) {
     var t = String(text).trim()
     var v = t === "" ? NaN : Number(t)
@@ -1052,8 +1066,11 @@ Item {
     path: root.textScalePath
     watchChanges: true
     printErrors: false
-    onLoaded: root.applyTextScale(text())
-    onFileChanged: reload()
+    // Quickshell 0.3.2 ignores reload() while a read is in flight, so a
+    // change that lands during a read is queued and read once it finishes.
+    onLoaded: root.textFileLoaded(text())
+    onLoadFailed: root.textFileLoaded(null)
+    onFileChanged: root.textFileChanged()
   }
 
   // ---- herdr-core and herdr-app ----------------------------------------

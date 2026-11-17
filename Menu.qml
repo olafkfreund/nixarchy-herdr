@@ -61,6 +61,10 @@ Item {
   // by the screen's height, which made the menu about 1.7x too large on a
   // 1440p panel; don't bring that back. The text size is the model's
   // (herd.textScale), shared with the bar and kept in a file.
+  // The reply may use 40 % of the height the menu can ever have. That is
+  // fixed by the screen, so the card around it can size from it without a loop.
+  readonly property real replyBudget: Math.max(Style.space(40),
+    (surface ? surface.parent.height : 600) * 0.4)
   readonly property int cardWidth: Math.round(Style.space(760) * herd.textScale)
 
   // This machine's name, for a new session that names no other host.
@@ -523,7 +527,8 @@ Item {
             anchors.leftMargin: Style.space(8)
             anchors.rightMargin: Style.space(8)
             visible: root.inputMode === "prompt" && root.promptReply !== ""
-            height: Math.min(replyText.implicitHeight, card.bodyHeight * 0.4)
+            // From the surface, not the card: the card is sized around this box.
+            height: Math.min(replyText.implicitHeight, root.replyBudget)
             contentWidth: width
             contentHeight: replyText.implicitHeight
             clip: true
