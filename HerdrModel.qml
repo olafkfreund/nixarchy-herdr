@@ -143,6 +143,9 @@ Item {
   property int appWatchdogMs: 40000
   property int appBackoffMs: 2000
   property int appBackoffCur: 0
+  // Bumped on a failed start and on every restart: an app-list that began
+  // before then answers for a subscription that is gone, and is dropped.
+  property int appGen: 0
 
   // Which agent spoke last, as agentKey(), and every agent that
   // was already asking when we last looked.
@@ -255,7 +258,7 @@ Item {
   // One completion per run. Only an action may dismiss the surface.
   function complete(kind, out, code, proc) {
     if (kind === "list") { applyPayload(out, code); return }
-    if (kind === "applist") { applyAppList(out, code); return }
+    if (kind === "applist") { applyAppList(out, code, proc.gen); return }
     if (kind === "host") {
       if (proc.gen !== pollGen) return
       applyHostPayload(proc.modelData, code === 0 ? out : "")
@@ -316,7 +319,8 @@ Item {
     var running = 0, agents = 0, blocked = 0, done = 0, working = 0, unreadable = 0
     for (var k = 0; k < all.length; k++) {
       var session = all[k]
-      if (session.running) running++
+      // App spaces are not herdr servers.
+      if (session.running && session.kind !== "app") running++
       if (session.running && session.readable === false) unreadable++
       agents += session.agents || 0
       blocked += session.blocked || 0
@@ -998,10 +1002,13 @@ Item {
         wantingNow[key] = true
         if (root.wantingBefore[key]) continue
         var seq = agents[j].seq || 0
-        if (freshest === null || seq > freshest.seq) {
-          freshest = { key: key, seq: seq }
+        // App seqs are epoch ms and classic ones are herdr's counters: never
+        // compared across. Within a scale the seq decides; across, classic wins.
+        var app = session.kind === "app"
+        if (freshest === null || (app !== freshest.app ? !app : seq > freshest.seq)) {
+          freshest = { key: key, seq: seq, app: app }
           tied = false
-        } else if (seq === freshest.seq) {
+        } else if (app === freshest.app && seq === freshest.seq) {
           tied = true
         }
       }
@@ -1035,7 +1042,7 @@ Item {
   // machine is not connected. Nothing is acted on a row in that state.
   function appRowStale(session) {
     if (!session || session.kind !== "app") return false
-    return appStale || (session.host ? appMachineState(session.host) !== "connected" : false)
+    return !hcAvailable || appStale || (session.host ? appMachineState(session.host) !== "connected" : false)
   }
 
   function appRowNotLive(session) {
@@ -1078,10 +1085,12 @@ Item {
 
   function appKill(session, agent) {
     if (appRowNotLive(session)) return
-    killSessionRef = session
-    killAgentRef = agent
-    appLaunch(["app-kill", agent.pane, String(agent.cascadeKey || "")], "kill", false,
-              sessionKey(session), true)
+    // Only once accepted: a refused kill must not retarget the one running.
+    if (appLaunch(["app-kill", agent.pane, String(agent.cascadeKey || "")], "kill", false,
+                  sessionKey(session), true)) {
+      killSessionRef = session
+      killAgentRef = agent
+    }
   }
 
   // Always three arguments, so an empty directory or machine stays in place.
@@ -1090,7 +1099,7 @@ Item {
       actionError = "not a valid session name"
       return false
     }
-    if (appStale || (host && appMachineState(host) !== "connected")) {
+    if (!hcAvailable || appStale || (host && appMachineState(host) !== "connected")) {
       actionError = (host || "desktop app") + " is not live"
       return false
     }
@@ -1099,6 +1108,7 @@ Item {
 
   function appStart() {
     if (!hcAvailable) return
+    appGen++
     appSubProc.launched = true
     appSubProc.exited = false
     appSubProc.running = true
@@ -1119,10 +1129,12 @@ Item {
   }
 
   function appRunList() {
+    if (!hcAvailable) return
     if (appListProc.running || appListProc.open) { appDirty = true; return }
     appListProc.gotOut = false
     appListProc.gotExit = false
     appListProc.open = true
+    appListProc.gen = appGen
     appListProc.command = remote ? [root.script, "app-list", "--remote"] : [root.script, "app-list"]
     appListProc.running = true
   }
@@ -1135,10 +1147,14 @@ Item {
     if (appSubProc.running) { appSubProc.launched = false; appSubProc.running = false }
     appSubLive = false
     appStale = true
-    var wait = appBackoffCur > 0 ? appBackoffCur : appBackoffMs
-    appBackoff.interval = wait
-    appBackoffCur = Math.min(wait * 2, 60000)
+    appBackoff.interval = nextBackoff()
     appBackoff.start()
+  }
+
+  function nextBackoff() {
+    var wait = appBackoffCur > 0 ? appBackoffCur : appBackoffMs
+    appBackoffCur = Math.min(wait * 2, 60000)
+    return wait
   }
 
   function appSubExited() {
@@ -1153,6 +1169,8 @@ Item {
     appSubProc.launched = false
     appWatchdog.stop()
     hcAvailable = false
+    appGen++
+    appRetry.stop()
     appStale = false
     appSessions = []
     appHostSessions = []
@@ -1160,10 +1178,12 @@ Item {
     rebuild()
   }
 
-  function applyAppList(text, code) {
+  function applyAppList(text, code, gen) {
     var data = null
     try { data = JSON.parse(text) } catch (e) { data = null }
-    if (data && data.ok === true && code === 0) {
+    if (gen !== appGen) {
+      // A stale answer changes nothing, but a change that came meanwhile still needs a run.
+    } else if (data && data.ok === true && code === 0) {
       var rows = data.sessions || []
       appSessions = rows.filter(function (r) { return !r.host })
       appHostSessions = remote ? rows.filter(function (r) { return r.host }) : []
@@ -1176,6 +1196,11 @@ Item {
       appStale = true
       appError = data && data.error ? String(data.error)
         : code > 0 ? "herdr-sessions exited with code " + code : "unexpected output from herdr-sessions"
+      // Heartbeats keep the watchdog quiet, so nothing else would ask again.
+      if (hcAvailable && !appRetry.running) {
+        appRetry.interval = nextBackoff()
+        appRetry.start()
+      }
     }
     if (appDirty) { appDirty = false; appRunList() }
   }
@@ -1364,6 +1389,7 @@ Item {
   Process {
     id: appListProc
     property string kind: "applist"
+    property int gen: 0
     property string out: ""
     property int code: 0
     property bool gotOut: false
@@ -1388,6 +1414,11 @@ Item {
     id: appWatchdog
     interval: root.appWatchdogMs
     onTriggered: root.appSubDown()
+  }
+
+  Timer {
+    id: appRetry
+    onTriggered: root.appRunList()
   }
 
   Timer {
