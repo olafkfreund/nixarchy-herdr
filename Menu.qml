@@ -36,7 +36,7 @@ Item {
   readonly property color accent: Commons.Color.accent
   readonly property color urgent: Commons.Color.urgent
   readonly property string fontFamily: Style.font.family
-  function togglePin() {}
+  function togglePin(fromKey) {}
 
   // The output Hyprland has focused, which is where a keyboard-summoned
   // surface belongs - the same rule Omarchy's own bar uses to route a panel.
@@ -59,10 +59,20 @@ Item {
   // Style.space for the card - like the rest of the desktop, and Hyprland's
   // per-monitor scale does the rest. An earlier version also multiplied them
   // by the screen's height, which made the menu about 1.7x too large on a
-  // 1440p panel; don't bring that back. textScale stays at 1.0 because the
-  // rows and HerdrModel read it.
-  readonly property real textScale: 1.0
-  readonly property int cardWidth: Style.space(760)
+  // 1440p panel; don't bring that back. The text size is the model's
+  // (herd.textScale), shared with the bar and kept in a file.
+  // The reply may use 40 % of the height the menu can ever have. That is
+  // fixed by the screen, so the card around it can size from it without a loop.
+  readonly property real replyBudget: Math.max(Style.space(40),
+    (surface ? surface.parent.height : 600) * 0.4)
+  readonly property int cardWidth: Math.round(Style.space(760) * herd.textScale)
+
+  // This machine's name, for a new session that names no other host.
+  FileView {
+    id: hostFile
+    path: "/etc/hostname"
+  }
+  readonly property string localHost: String(hostFile.text() || "").trim()
 
   // Plugin lifecycle hooks. The host calls open(payloadJson) after
   // `omarchy-shell shell summon nixarchy.herdr ...` and close() when hidden.
@@ -112,6 +122,8 @@ Item {
   // moving the cursor cannot redirect it.
   property var promptTarget: null
   property string promptReply: ""
+  // Seconds since the prompt was sent, counted only while it is awaited.
+  property int waitSecs: 0
   property bool promptConfirmOpen: false
   // A `new` is running: the line is read-only until its result comes in.
   property bool newPending: false
@@ -155,6 +167,7 @@ Item {
     root.promptTarget = null
     root.promptReply = ""
     root.promptConfirmOpen = false
+    waitTimer.running = false
     newField.text = ""
     Qt.callLater(function () { card.forceActiveFocus() })
   }
@@ -209,8 +222,8 @@ Item {
     if (!root.promptTarget || text.trim() === "" || root.awaitingExit) return
     if (!confirmed && herd.agentBusy(root.targetStatus())) {
       root.promptConfirmOpen = true
-      promptConfirm.selectedIndex = 0
-      Qt.callLater(function () { confirmKeys.forceActiveFocus() })
+      promptConfirm.dialog.selectedIndex = 0
+      Qt.callLater(function () { promptConfirm.forceActiveFocus() })
       return
     }
     var t = root.promptTarget
@@ -234,6 +247,8 @@ Item {
     // the process starts.
     promptProc.stdinEnabled = true
     root.promptReply = "waiting for " + t.title + "\u2026"
+    root.waitSecs = 0
+    waitTimer.running = true
     promptProc.gotOut = false
     promptProc.gotExit = false
     root.awaitingExit = true
@@ -264,13 +279,14 @@ Item {
   // The text is cleared only when it was sent. A run for a line that has been
   // cancelled since has nowhere to show anything.
   function promptDone(out, code) {
+    waitTimer.running = false
     if (root.inputMode !== "prompt") return
     var data = null
     try { data = JSON.parse(out) } catch (e) { data = null }
     if (!data) {
       root.promptReply = "no reply"
     } else if (data.ok === true && code === 0) {
-      var excerpt = root.replyFrom(data.output)
+      var excerpt = root.replyExcerpt(data.output)
       root.promptReply = data.status === "timeout"
         ? "still working after 5 min" + (excerpt ? "\n" + excerpt : "")
         : (excerpt || "(no output)")
@@ -286,36 +302,26 @@ Item {
     Qt.callLater(function () { newField.forceActiveFocus() })
   }
 
-  // The agent's answer out of its screen. Agents draw their input prompt
-  // after the answer and their own footer - status line, hints, warnings -
-  // below that, so everything from the last prompt marker down is dropped.
-  // Blank lines and the box-drawing rules framing the input are noise too.
-  function replyFrom(output) {
-    var lines = String(output || "").split("\n")
-    for (var i = lines.length - 1; i >= 0; i--) {
-      if (/^\s*[\u276f>]\s*$/.test(lines[i])) { lines = lines.slice(0, i); break }
+  // The tail of the agent's screen, as drawn: indentation kept so code and
+  // lists stay readable. At most 40 lines and 4000 characters, cut at a line
+  // start; one longer last line keeps its end behind an ellipsis.
+  function replyExcerpt(output) {
+    var lines = String(output || "").replace(/\s+$/, "").split("\n").slice(-40)
+    var text = lines.join("\n")
+    while (text.length > 4000 && lines.length > 1) {
+      lines.shift()
+      text = lines.join("\n")
     }
-    // Then only what follows the prompt that was sent, which the agent echoes
-    // as "❯ <text>": everything above it is earlier conversation.
-    for (var k = lines.length - 1; k >= 0; k--) {
-      if (/^\s*[\u276f>]\s+\S/.test(lines[k])) { lines = lines.slice(k + 1); break }
-    }
-    lines = lines.map(function (line) { return line.replace(/^\s+/, "") })
-    lines = lines.filter(function (line) {
-      return line.trim() !== "" && !/^[\s\u2500-\u257f]+$/.test(line)
-    })
-    // The terminal wrapped the answer at its own width; this card wraps again
-    // at a different one. Rejoin wrapped lines into paragraphs, starting a
-    // new one only where a line opens with a marker: a bullet, the agent's
-    // status glyphs, a list dash or a number.
-    var paragraphs = []
-    lines.forEach(function (line) {
-      if (paragraphs.length === 0 || /^([\u25cf\u273b\u23bf\u2022*-]|\d+[.)])/.test(line))
-        paragraphs.push(line)
-      else
-        paragraphs[paragraphs.length - 1] += " " + line
-    })
-    return paragraphs.slice(-6).join("\n")
+    return text.length > 4000 ? "\u2026" + text.slice(-4000) : text
+  }
+
+  // What the line says it is for. A new session names where it will run, so
+  // the host comes last and is the part that survives eliding.
+  function inputLabelText() {
+    if (root.inputMode === "prompt" && root.promptTarget)
+      return (root.promptTarget.host ? root.promptTarget.host + " \u00b7 " : "") + root.promptTarget.title
+    return (root.newKind === "app" ? "New space" : "New session") + " on "
+      + (root.newHost !== "" ? root.newHost : root.localHost)
   }
 
   // The prompt crosses the panel and ssh on stdin, but the script hands it to
@@ -341,6 +347,14 @@ Item {
     onRunningChanged: if (!running) root.promptStartFailed()
   }
 
+  // One tick a second, only while a prompt is awaited.
+  Timer {
+    id: waitTimer
+    interval: 1000
+    repeat: true
+    onTriggered: root.waitSecs++
+  }
+
   PanelWindow {
     id: panel
 
@@ -355,6 +369,25 @@ Item {
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
 
     onVisibleChanged: if (visible) Qt.callLater(function() { card.forceActiveFocus() })
+
+    // Text size from the keyboard, also while an input has the focus. Card's
+    // own shortcuts are off in the menu (pinnable is false), so these are the
+    // only ones here.
+    Shortcut {
+      sequences: ["Ctrl+=", "Ctrl++"]
+      context: Qt.WindowShortcut
+      onActivated: herd.textBigger()
+    }
+    Shortcut {
+      sequences: ["Ctrl+-"]
+      context: Qt.WindowShortcut
+      onActivated: herd.textSmaller()
+    }
+    Shortcut {
+      sequences: ["Ctrl+0"]
+      context: Qt.WindowShortcut
+      onActivated: herd.textReset()
+    }
 
     Rectangle {
       anchors.fill: parent
@@ -416,7 +449,7 @@ Item {
           anchors.right: parent.right
           anchors.bottom: parent.bottom
           height: root.inputOpen
-            ? inputBox.height + (replyText.visible ? replyText.implicitHeight + Style.space(6) : 0)
+            ? inputBox.height + (replyBox.visible ? replyBox.height + Style.space(6) : 0)
             : 0
           visible: root.inputOpen
           clip: true
@@ -439,17 +472,16 @@ Item {
               Text {
                 id: inputLabel
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.min(implicitWidth, Style.space(170))
-                elide: Text.ElideRight
-                text: root.inputMode === "prompt" && root.promptTarget
-                  ? (root.promptTarget.host ? root.promptTarget.host + " \u00b7 " : "")
-                    + root.promptTarget.title
-                  : (root.newHost === "" ? (root.newKind === "app" ? "new space" : "new session")
-                     : "new on " + root.newHost)
+                // Up to half the row; when it must give, the leading words go
+                // and the host at the end stays.
+                width: Math.min(implicitWidth, Math.round(inputBox.width / 2))
+                elide: root.inputMode === "prompt" ? Text.ElideRight : Text.ElideLeft
+                text: root.inputLabelText()
+                Accessible.name: text
                 textFormat: Text.PlainText
                 font.family: root.fontFamily
-                font.pixelSize: Math.round(Style.font.caption * root.textScale)
-                color: Qt.darker(root.foreground, 1.5)
+                font.pixelSize: Math.round(Style.font.caption * herd.textScale)
+                color: Qt.alpha(root.foreground, 0.88)
               }
 
               TextInput {
@@ -457,10 +489,22 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - parent.spacing - inputLabel.width
                 font.family: root.fontFamily
-                font.pixelSize: Math.round(Style.font.body * root.textScale)
+                font.pixelSize: Math.round(Style.font.body * herd.textScale)
                 color: root.foreground
                 selectByMouse: true
+                Accessible.name: inputLabel.text
                 readOnly: root.newPending || root.awaitingExit
+                Text {
+                  anchors.fill: parent
+                  visible: newField.text === ""
+                  text: root.inputMode === "prompt" && root.promptTarget
+                    ? "message to " + root.promptTarget.title
+                    : "name, then optionally a folder"
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  font: newField.font
+                  color: Qt.alpha(root.foreground, 0.68)
+                }
                 Keys.onPressed: function (event) {
                   if (event.key === Qt.Key_Escape) { root.cancelInput(); event.accepted = true }
                   else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -471,10 +515,11 @@ Item {
             }
           }
 
-          // The agent's own screen, trimmed to its last lines. Plain text:
-          // whatever an agent printed is external and never markup.
-          Text {
-            id: replyText
+          // The agent's own screen, trimmed to its last lines, in a box that
+          // scrolls past 40% of the card. Plain text: whatever an agent
+          // printed is external and never markup.
+          Flickable {
+            id: replyBox
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: inputBox.bottom
@@ -482,58 +527,46 @@ Item {
             anchors.leftMargin: Style.space(8)
             anchors.rightMargin: Style.space(8)
             visible: root.inputMode === "prompt" && root.promptReply !== ""
-            text: root.promptReply
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            maximumLineCount: 12
-            elide: Text.ElideRight
-            font.family: root.fontFamily
-            font.pixelSize: Math.round(Style.font.caption * root.textScale)
-            color: Qt.darker(root.foreground, 1.2)
+            // From the surface, not the card: the card is sized around this box.
+            height: Math.min(replyText.implicitHeight, root.replyBudget)
+            contentWidth: width
+            contentHeight: replyText.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            Text {
+              id: replyText
+              width: replyBox.width
+              text: waitTimer.running
+                ? "waiting " + root.waitSecs + " s \u00b7 Esc cancels"
+                : root.promptReply
+              textFormat: Text.PlainText
+              wrapMode: Text.Wrap
+              font.family: "monospace"
+              font.pixelSize: Math.round(Style.font.caption * herd.textScale)
+              color: Qt.alpha(root.foreground, 0.97)
+            }
           }
         }
 
         // Asked before typing into an agent that is busy, blocked on a
         // question, or unreadable. Opens on Cancel, like the kill dialog.
-        Item {
-          id: confirmKeys
-          anchors.fill: parent
-          z: 10
-          visible: root.promptConfirmOpen
-          focus: root.promptConfirmOpen
-
-          Keys.priority: Keys.BeforeItem
-          Keys.onPressed: function (event) {
-            if (promptConfirm.handleKey(event)) event.accepted = true
-          }
-
-          // Swallows every click, hover and scroll while the dialog is up, so
-          // nothing underneath it can be hit while it is asking.
-          MouseArea {
-            anchors.fill: parent
-            acceptedButtons: Qt.AllButtons
-            hoverEnabled: true
-            onWheel: function (wheel) { wheel.accepted = true }
-          }
-
-          ConfirmDialog {
-            id: promptConfirm
-            anchors.fill: parent
-            opened: root.promptConfirmOpen
-            message: root.promptTarget
-              ? herd.plain(root.promptTarget.title) + " is " + root.targetStatus()
-                + ". Send anyway? It will arrive in the middle of what it is doing."
-              : ""
-            confirmText: "Send"
-            background: Commons.Color.background
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onCanceled: root.closeConfirm()
-            onConfirmed: {
-              root.promptConfirmOpen = false
-              root.submitPrompt(true)
-              Qt.callLater(function () { newField.forceActiveFocus() })
-            }
+        ConfirmOverlay {
+          id: promptConfirm
+          opened: root.promptConfirmOpen
+          message: root.promptTarget
+            ? herd.plain(root.promptTarget.title) + " is " + root.targetStatus()
+              + ". Send anyway? It will arrive in the middle of what it is doing."
+            : ""
+          confirmText: "Send"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          textScale: herd.textScale
+          onCanceled: root.closeConfirm()
+          onConfirmed: {
+            root.promptConfirmOpen = false
+            root.submitPrompt(true)
+            Qt.callLater(function () { newField.forceActiveFocus() })
           }
         }
       }

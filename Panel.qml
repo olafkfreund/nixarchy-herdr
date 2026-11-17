@@ -1,8 +1,6 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Effects
 import Quickshell
-import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Commons as Commons
@@ -100,8 +98,8 @@ Panel {
   // much of a terminal title you want to read rather than something the
   // content asks for, and a narrower card sits better next to the work it is
   // describing.
-  readonly property int cardWidth: Style.space(300)
-  readonly property int cardMinWidth: Style.space(210)
+  readonly property int cardWidth: Math.round(Style.space(300) * herd.textScale)
+  readonly property int cardMinWidth: Math.round(Style.space(210) * herd.textScale)
   readonly property int cardMinHeight: Style.space(120)
 
   // The glyph, plus the few pixels the badge overhangs its corner by. Without
@@ -133,7 +131,11 @@ Panel {
   // own desktop and re-deciding it on every pin is the panel forgetting
   // something you told it. The position outlives the unpin for exactly that
   // reason: unpinning is putting it away, not throwing it out.
-  function togglePin() {
+  // From the keyboard the card must take focus at once; a click or a restore
+  // keeps the 300 ms arm delay. Set before pinning, consumed by onVisibleChanged.
+  property bool pinFromKey: false
+  function togglePin(fromKey) {
+    pinFromKey = fromKey === true && !pinned
     persistSettings(pinned ? { pinned: false }
                            : { pinned: true, pinScreen: screenName })
   }
@@ -234,8 +236,10 @@ Panel {
         anchors.verticalCenter: serverIcon.verticalCenter
         anchors.verticalCenterOffset: Math.round(Style.bar.iconFont * 0.40)
         visible: herd.badgeShown
-        height: Math.round(Style.bar.iconFont * 0.95)
-        width: Math.max(height, count.implicitWidth + Math.round(height * 0.45))
+        // Full size carries a count; with nothing to count it is a small dot.
+        readonly property int fullHeight: Math.round(Style.bar.iconFont * 0.95)
+        height: count.text === "" ? Math.round(fullHeight * 0.55) : fullHeight
+        width: count.text === "" ? height : Math.max(height, count.implicitWidth + Math.round(height * 0.45))
         radius: height / 2
         color: herd.badgeColor()
         // A rim in the bar's own background separates the badge from the
@@ -251,10 +255,10 @@ Panel {
           // reserves descender room a digit never uses. Nudge it back down
           // onto the middle of the disc.
           anchors.verticalCenterOffset: Math.round(font.pixelSize * 0.1)
-          text: herd.blockedCount > 0 ? herd.blockedCount : herd.runningCount > 0 ? herd.runningCount : herd.appMark ? "!" : ""
+          text: herd.needCount > 0 ? herd.needCount + (herd.appMark ? "!" : "") : herd.appMark ? "!" : ""
           textFormat: Text.PlainText
           font.family: root.fontFamily
-          font.pixelSize: Math.round((badge.height - 2 * badge.border.width) * 0.88)
+          font.pixelSize: Math.round((badge.fullHeight - 2 * badge.border.width) * 0.88)
           font.bold: true
           renderType: Text.NativeRendering
           color: Commons.Color.background
@@ -320,7 +324,7 @@ Panel {
     exclusionMode: ExclusionMode.Ignore
 
     WlrLayershell.namespace: "omarchy-herdr-pin"
-    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.layer: WlrLayer.Top
 
     // Keyboard focus arrives on a click and not a moment earlier. Hyprland
     // hands focus to an OnDemand surface when it first maps, which is right
@@ -363,8 +367,9 @@ Panel {
     readonly property real roomWidth: Math.max(root.cardMinWidth, width - edge * 2)
     readonly property real roomHeight: Math.max(root.cardMinHeight, height - edge * 2)
 
+    // A width the user chose wins over text size; only the default grows.
     readonly property real cardWidth: Math.min(roomWidth,
-      Math.max(root.cardMinWidth, chosenWidth > 0 ? chosenWidth : root.cardWidth))
+      chosenWidth > 0 ? chosenWidth : Math.max(root.cardMinWidth, root.cardWidth))
     readonly property real cardHeight: Math.min(roomHeight,
       Math.max(root.cardMinHeight, chosenHeight > 0
         ? chosenHeight : pinCard.bodyHeight + verticalInset))
@@ -459,7 +464,13 @@ Panel {
       placed = false
       if (visible) {
         Qt.callLater(pinWindow.place)
-        armTimer.restart()
+        if (root.pinFromKey) {
+          root.pinFromKey = false
+          focusArmed = true
+          Qt.callLater(function() { pinCard.forceActiveFocus() })
+        } else {
+          armTimer.restart()
+        }
       }
     }
 
@@ -600,7 +611,7 @@ Panel {
                   width: Math.max(2, Style.space(3))
                   height: width
                   radius: width / 2
-                  color: Qt.darker(root.foreground, 2.2)
+                  color: Qt.alpha(root.foreground, 0.62)
                 }
               }
             }

@@ -12,6 +12,6 @@ jobs:
       - name: shellcheck
         run: shellcheck bin/herdr-sessions bin/herdr-menu-keys tests/herdr-sessions.sh
       - name: session actions
-        run: node tests/session-actions.cjs
+        run: for f in tests/*.cjs; do node "$f" || exit 1; done
       - name: herdr-sessions
         run: bash tests/herdr-sessions.sh
