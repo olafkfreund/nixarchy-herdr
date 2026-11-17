@@ -1111,10 +1111,10 @@ FAKE_HC_SNAPSHOT=$(jq -nc '{seq:1,terminals:[
    labels:{},title:"child",argv:[],status_ms:0}]}')
 out=$("$script" app-kill t1 '')
 check "73 changed cascade" jq -e '.ok == false and .changed and .cascadeKey == "t2" and .cascade[0].title == "child"' <<<"$out"
-check "73 stale key never kills" test -z "$(rg '^hc-call kill$' "$FAKE_LOG")"
+check "73 stale key never kills" test -z "$(grep -E '^hc-call kill$' "$FAKE_LOG")"
 out=$("$script" app-kill t1 t2)
 check "73 current key kills" jq -e '.ok == true' <<<"$out"
-check "73 kill reached hc" rg -q '^hc-call kill$' "$FAKE_LOG"
+check "73 kill reached hc" grep -qE '^hc-call kill$' "$FAKE_LOG"
 
 reset
 for addr in '-' 't' 'foo!/t1' 'razer/t1234567890' 'razer/t1/extra'; do
@@ -1135,15 +1135,15 @@ out=$(umask 022; "$script" app-focus t1)
 check "75 start and focus" jq -e '.ok == true' <<<"$out"
 check "75 started window survives cleanup" test -f "$FAKE_APP_PID_FILE" &&
   check "75 started window alive" kill -0 "$(cat "$FAKE_APP_PID_FILE")"
-check "75 focused by address" rg -q "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
-check "75 app focus call" rg -q '^app-call agent.focus$' "$FAKE_LOG"
+check "75 focused by address" grep -qE "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+check "75 app focus call" grep -qE '^app-call agent.focus$' "$FAKE_LOG"
 
 reset
 FAKE_APP_LS_FAIL=refused FAKE_APP_DO_ERROR_ONCE='Connection refused'
 export FAKE_APP_LS_FAIL FAKE_APP_DO_ERROR_ONCE
 out=$("$script" app-focus t1)
 check "75 startup focus retries" jq -e '.ok == true' <<<"$out"
-check "75 focus attempted twice" test "$(rg -c '^app-call agent.focus$' "$FAKE_LOG")" = 2
+check "75 focus attempted twice" test "$(grep -cE '^app-call agent.focus$' "$FAKE_LOG")" = 2
 
 reset
 cp -a "$tmp/bin" "$tmp/bin-no-uwsm"
@@ -1152,7 +1152,7 @@ FAKE_APP_LS_FAIL=refused
 export FAKE_APP_LS_FAIL
 out=$(PATH="$tmp/bin-no-uwsm:$(dirname "$(command -v jq)"):/usr/bin:/bin" "$script" app-focus t1)
 check "75 starts without uwsm" jq -e '.ok == true' <<<"$out"
-check "75 no uwsm wrapper" test -z "$(rg '^uwsm-launched$' "$FAKE_LOG")"
+check "75 no uwsm wrapper" test -z "$(grep -E '^uwsm-launched$' "$FAKE_LOG")"
 
 reset
 fake_client herdr-app cli
@@ -1161,7 +1161,7 @@ export FAKE_APP_PIDS FAKE_APP_LS_FAIL=refused
 out=$("$script" app-focus t1)
 stop_bg
 check "76 CLI-only app is not a window" jq -e '.ok == true' <<<"$out"
-check "76 CLI-only starts window" rg -q "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
+check "76 CLI-only starts window" grep -qE "dispatch hl.dsp.focus\(\{ window = 'address:0x99' \}\)" "$FAKE_LOG"
 
 reset
 fake_client herdr-app window
@@ -1171,7 +1171,7 @@ fake_windows "${bg[-1]}" 2
 out=$("$script" app-focus t1)
 stop_bg
 check "77 two windows refused" jq -e '.error == "more than one herdr-app window"' <<<"$out"
-check "77 no focus action" test -z "$(rg '^app-call agent.focus$' "$FAKE_LOG")"
+check "77 no focus action" test -z "$(grep -E '^app-call agent.focus$' "$FAKE_LOG")"
 
 reset
 fake_client herdr-app window
@@ -1216,7 +1216,7 @@ for action in 'app-focus t1' 'app-prompt t1' 'app-interrupt t1' 'app-kill t1 t2'
   out=$("$script" "${words[@]}")
   check "81 demo $action" jq -e '.ok == true' <<<"$out"
 done
-check "81 demo touched no hc" test -z "$(rg '^hc-call ' "$FAKE_LOG")"
+check "81 demo touched no hc" test -z "$(grep -E '^hc-call ' "$FAKE_LOG")"
 "$script" demo off >/dev/null
 
 exit "$failed"
