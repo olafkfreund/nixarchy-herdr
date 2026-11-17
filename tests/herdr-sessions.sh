@@ -146,6 +146,9 @@ case "$1 $2" in
       head -c "$FAKE_HC_SNAPSHOT_BYTES" /dev/zero | tr '\0' x
       printf '\n'
     else printf '%s\n' "$FAKE_HC_SNAPSHOT"; fi
+    if [[ -n ${FAKE_HC_SLEEP_AFTER_SNAPSHOT-} ]]; then
+      exec -a "$FAKE_HC_SLEEP_MARKER" sleep "$FAKE_HC_SLEEP_AFTER_SNAPSHOT"
+    fi
     while :; do printf '{"heartbeat":true}\n'; sleep 0.2; done ;;
   'machine ls') printf '%s\n' "$FAKE_HC_MACHINES" ;;
   *) exit 1 ;;
@@ -254,7 +257,8 @@ reset() {
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
     FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE \
     FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC \
-    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON \
+    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_SLEEP_AFTER_SNAPSHOT FAKE_HC_SLEEP_MARKER \
+    FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON \
     FAKE_HC_SEND_OUT FAKE_HC_SEND_RC FAKE_HC_SEND_SLEEP FAKE_HC_READ_OUT FAKE_HC_READ_RC \
     FAKE_HC_INTERRUPT_OUT FAKE_HC_INTERRUPT_RC FAKE_HC_KILL_OUT FAKE_HC_KILL_RC \
     FAKE_APP_DO_ERROR FAKE_APP_DO_ERROR_ONCE FAKE_APP_PIDS
@@ -964,8 +968,23 @@ out=$(FAKE_APP_LS_FAIL=other "$script" app-list)
 check "62 uncertain window" jq -e '.windowOpen == null' <<<"$out"
 out=$(FAKE_HC_SNAPSHOT='bad' "$script" app-list)
 check "63 malformed snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
-out=$(FAKE_HC_SNAPSHOT_BYTES=8388610 "$script" app-list)
-check "64 oversized snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
+
+reset
+marker="hc-events-sleeper-$BASHPID"
+start=$(date +%s%N)
+out=$(FAKE_HC_SLEEP_AFTER_SNAPSHOT=5 FAKE_HC_SLEEP_MARKER="$marker" "$script" app-list)
+took=$(( ($(date +%s%N) - start) / 1000000 ))
+hc_pid=$(awk '$1 == "hc-pid" && $3 == "events" {print $2; exit}' "$FAKE_LOG")
+[[ -z $hc_pid ]] || bg+=("$hc_pid")
+check "63 first snapshot line returns promptly" jq -e '.ok == true and .sessions == []' <<<"$out"
+check "63 first snapshot line under 1 second" test "$took" -lt 1000
+check "63 no orphan snapshot sleeper" test -z "$(pgrep -f "$marker" || true)"
+stop_bg
+
+reset
+out=$( (ulimit -v 98304; FAKE_HC_SNAPSHOT_BYTES=8388610 "$script" app-list) 2>"$tmp/oversized.err")
+check "64 oversized snapshot within memory limit" jq -e '.error == "could not read herdr-core"' <<<"$out"
+check "64 oversized snapshot without allocation failure" test ! -s "$tmp/oversized.err"
 
 mkdir -p "$tmp/only-jq"
 ln -s "$(command -v jq)" "$tmp/only-jq/jq"

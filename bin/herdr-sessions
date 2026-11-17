@@ -249,7 +249,7 @@ app_snapshot() {
   bounded 3 hc events --json 2>/dev/null > "$RUN_DIR/hc-events" &
   local producer=$! snapshot
   JOB_PIDS+=("$producer")
-  snapshot=$(head -c "$((TOTAL_BYTE_CAP + 1))" < "$RUN_DIR/hc-events" | head -n 1) || true
+  snapshot=$(head -n 1 < "$RUN_DIR/hc-events" | head -c "$((TOTAL_BYTE_CAP + 1))") || true
   kill_tree "$producer"
   wait "$producer" 2>/dev/null || true
   JOB_PIDS=()
