@@ -31,7 +31,7 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
                     'appRunList', 'appSubDown', 'appSubExited', 'appSubStartFailed',
                     'applyAppList', 'appMachineState', 'appRowStale', 'appRowNotLive',
                     'appLaunch', 'confirmMessage', 'subtitleFor', 'agentNote', 'agentColor',
-                    'activateCursor', 'errorLine', 'badgeColor']) {
+                    'activateCursor', 'errorLine', 'badgeColor', 'nextBackoff']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
   assert.ok(match, `Missing function: ${name}`);
   vm.runInContext(match[0], context);
@@ -661,7 +661,7 @@ console.log('PASS: a done-only list polls every 20 s');
     Object.assign(context, {
       hcAvailable: true, appStale: false, appDirty: false, appSubLive: false, appError: '',
       appSessions: [], appHostSessions: [], appMachines: [], appBackoffMs: 2000, appBackoffCur: 0,
-      appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(), appListRetry: timer(),
+      appGen: 0, appListRetries: 0, appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(), appRetry: timer(),
       appSubProc: { running: false, launched: false, exited: false },
       appListProc: { running: false, open: false, kind: 'applist' },
       confirmAgent: null, killSessionRef: null, killAgentRef: null,
@@ -679,6 +679,7 @@ console.log('PASS: a done-only list polls every 20 s');
       seq: 0, cascade: [], cascadeKey: '' })) });
   const runList = (rows, machines) => {
     context.appListProc.running = false;
+    context.appListProc.gen = context.appGen;
     finish(context.appListProc, listOut(rows, machines), 0);
   };
 
@@ -873,6 +874,94 @@ console.log('PASS: a done-only list polls every 20 s');
     assert.equal(context.subtitleFor(target), 'not live');
   }
   console.log('PASS: a not-live row refuses focus, prompt, interrupt, kill and new');
+
+  // Review fixes
+  // A refused kill must not retarget the kill that is running.
+  appFresh();
+  runList([app('sp1', '', 't1', 't2')]);
+  const [kA, kB] = context.sessions[0].agentList;
+  context.appKill(context.sessions[0], kA);
+  assert.equal(context.killProc.running, true);
+  context.appKill(context.sessions[0], kB);
+  assert.equal(context.killAgentRef, kA, 'the running kill keeps its target');
+  assert.match(context.actionError, /busy/);
+  console.log('PASS: an overlapping kill does not overwrite the running target');
+
+  // An app-list that began before a start failure or restart is dropped.
+  appFresh();
+  context.appStart();
+  context.appRunList();
+  const staleRun = context.appListProc.gen;
+  context.appSubProc.launched = true;
+  context.appSubStartFailed();
+  context.appListProc.running = false;
+  finish(context.appListProc, listOut([app('sp1', '', 't1')]), 0);
+  assert.equal(staleRun !== context.appGen, true);
+  assert.equal(context.appSessions.length, 0, 'a late list cannot repopulate rows after hc failed');
+  assert.equal(context.appRowStale(app('sp1', '', 't1')), true, 'no hc: every app row is not live');
+  appFresh();
+  context.appStart();
+  context.appRunList();
+  context.appSubDown(); context.appBackoff.running = false; context.appStart();
+  context.appListProc.running = false;
+  finish(context.appListProc, listOut([app('sp1', '', 't1')]), 0);
+  assert.equal(context.appSessions.length, 0, 'a list from before a restart is dropped');
+  console.log('PASS: a stale-generation app-list is ignored, and no hc means not live');
+
+  // A failed app-list is retried through the backoff.
+  appFresh();
+  context.appStart();
+  context.appLine('{"seq":1,"terminals":[]}');
+  context.appRunList();
+  context.appListProc.running = false;
+  finish(context.appListProc, '{"ok":false,"error":"boom"}', 0);
+  assert.equal(context.appRetry.starts, 1);
+  assert.equal(context.appRetry.interval, 2000);
+  context.appRunList();
+  context.appListProc.running = false;
+  finish(context.appListProc, '{"ok":false,"error":"boom"}', 0);
+  assert.equal(context.appRetry.starts, 1, 'one retry at a time');
+  context.appRetry.running = false;
+  context.appRunList();
+  context.appListProc.running = false;
+  finish(context.appListProc, '{"ok":false,"error":"boom"}', 0);
+  assert.equal(context.appRetry.interval, 4000, 'the existing backoff doubles');
+  context.appRetry.running = false;
+  context.appRunList();
+  context.appListProc.running = false;
+  finish(context.appListProc, '{"ok":false,"error":"boom"}', 0);
+  assert.equal(context.appRetry.starts, 2, 'two retries, then it stops');
+  context.appLine('{"event":"heartbeat"}');
+  assert.equal(context.appListRetries, 2, 'a heartbeat does not reset the bound');
+  context.appLine('{"event":"changed"}');
+  assert.equal(context.appListRetries, 0, 'a real event resets the bound');
+  console.log('PASS: a failed app-list schedules a bounded retry with backoff');
+
+  // App spaces are not herdr servers.
+  appFresh();
+  context.hostNames = [];
+  context.localSessions = [{ name: 'c1', running: true, agentList: [] }];
+  runList([app('sp1', '', 't1'), app('sp2', '', 't2')]);
+  assert.equal(context.runningCount, 1);
+  assert.equal(context.agentCount, 2);
+  console.log('PASS: app spaces do not count as servers');
+
+  // updateAttention: app seqs are epoch ms, classic ones counters.
+  appFresh();
+  const want = (seq, kind, pane) => ({ kind, name: 'x' + pane, host: '', spaceId: 's', running: true,
+    agentList: [{ pane, status: 'blocked', seq }] });
+  const attn = (...rows) => {
+    context.root.wantingBefore = {}; context.wantingBefore = {};
+    context.root.attentionKey = ''; context.attentionKey = '';
+    context.updateAttention(rows);
+    return context.root.attentionKey;
+  };
+  assert.equal(attn(want(5, undefined, 'w1:p1'), want(1.7e12, 'app', 't1')), context.agentKey(want(5, undefined, 'w1:p1'), 'w1:p1'),
+    'classic beats app on a cross-scale tie-break');
+  assert.equal(attn(want(1.7e12, 'app', 't1'), want(1.7e12 + 5, 'app', 't2')),
+    context.agentKey(want(0, 'app', 't2'), 't2'), 'app agents order by status_ms');
+  assert.equal(attn(want(9, 'app', 't1'), want(9, 'app', 't2')), '', 'a tie inside the app scale goes to nobody');
+  console.log('PASS: attention never compares app and classic seqs; classic first, apps by status_ms');
 
   // Helpers
   appFresh();

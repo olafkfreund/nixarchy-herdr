@@ -500,6 +500,20 @@ call the real tools.
    - Push, then open the PR linking the intent, spec and plan. It is merged
      with `--merge`, with your OK.
 
+   **Review fixes (deviations from A1-A6, after the Opus and Codex reviews):**
+   - `app_snapshot` reads `head -n 1 | head -c CAP+1`; the planned order
+     blocked until the next hc line (heartbeats every 15 s).
+   - The cascade walks a children map down from each agent (depth 16), and the
+     merge jq runs under `bounded 5`. `CASCADE_KEY` may be up to 65536 bytes.
+   - The space walk stops at a machine boundary, and the row name and tab come
+     from the terminal that supplied `herdr.space`.
+   - A failed `hc read` after a sent prompt gives empty output; only a timeout
+     fails. A failing `hyprctl` never launches a window.
+   - Model: an `appGen` generation drops stale `app-list` results; a failed
+     `app-list` retries on the shared backoff; app rows are not counted as
+     servers; attention compares app agents (`status_ms`) only with each
+     other, classic first.
+
 8. **Lead, after merge and deploy: live checks.**
    - **Prerequisites:** a nixarchy pin bump, the p620 deploy with the owner's
      OK and a bus announcement, and razer reachable. Use throwaway labelled

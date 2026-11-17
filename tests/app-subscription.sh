@@ -3,7 +3,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
-trap 'pkill -f "[s]leep 31.7" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+# The fake's sleep carries this run's pid, so cleanup touches nothing else.
+trap 'pkill -f "[s]leep 31\.$$" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/shell/bin" "$tmp/bin"
 cp "$here/HerdrModel.qml" "$here/tests/app-subscription.qml" "$tmp/shell/"
 cp -r "$here/tests/app-subscription-stubs/Commons" "$tmp/shell/Commons"
@@ -19,7 +20,7 @@ if [[ $(wc -l < "$TEST_DIR/hc-starts") -ge 2 && $(wc -l < "$TEST_DIR/app-list-ru
   printf '{"ok":false,"error":"one failed read"}\n'
   exit 1
 fi
-printf '{"ok":true,"error":"","sessions":[],"windowOpen":false,"machines":[]}\n'
+printf '{"ok":true,"error":"","sessions":[{"kind":"app","name":"s","host":"","spaceId":"sp","running":true,"readable":true,"agents":0,"agentList":[]}],"windowOpen":false,"machines":[]}\n'
 STUB
 
 # Start 1: snapshot, a burst of five events, then silence. Start 2: snapshot,
@@ -35,10 +36,10 @@ case $n in
      echo '{"event":"changed"}'; sleep 0.5; exit 0 ;;
 esac
 trap 'kill "$!"' TERM
-sleep 31.7 &
+sleep "31.$RUN_MARK" &
 wait
 FAKE
 chmod +x "$tmp/shell/bin/herdr-sessions" "$tmp/bin/hc"
 
-TEST_DIR=$tmp QT_QPA_PLATFORM=offscreen PATH="$tmp/bin:$PATH" \
+RUN_MARK=$$ TEST_DIR=$tmp QT_QPA_PLATFORM=offscreen PATH="$tmp/bin:$PATH" \
   timeout 20 qs -p "$tmp/shell/app-subscription.qml"
