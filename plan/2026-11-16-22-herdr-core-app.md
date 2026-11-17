@@ -474,6 +474,8 @@ call the real tools.
    exits normally, `hcAvailable` stays true and the subscription restarts.
    The test copies the model with a stub `qs.Commons`
    (`tests/app-subscription-stubs/`) into a temp shell directory.
+   Issue 2983 G7 adds two timed `app-list` retries after a failed read, and
+   tests recovery when only heartbeats follow.
 
 6. **`README.md` and `manifest.json`.**
    - **Manifest.** `"version": "1.1.0"`. The `description` adds "and the
@@ -531,6 +533,15 @@ call the real tools.
      only. Disconnecting razer marks its rows "not live".
    - **The `i` key** works.
    - **On a host without hc,** the bar costs no more than before.
+
+## Deviations (Issue 2983)
+
+Gaps closed before merge, each in the commit of its code: G1 `error` counts
+as blocked in the app projection; G2 a stale failure mark on the bar badge,
+never green; G5 status compares `turn` with the `herdr.seen` label, falling
+back to attention when the label is absent; G6 the snapshot reader returns at
+the first newline, byte cap kept; G7 two timed `app-list` retries after a
+failed read.
 
 ## Tests
 

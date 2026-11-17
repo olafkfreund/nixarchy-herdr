@@ -4,11 +4,17 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(`${__dirname}/../HerdrModel.qml`, 'utf8');
+const panel = fs.readFileSync(`${__dirname}/../Panel.qml`, 'utf8');
 const context = { root: { script: 'herdr-sessions' }, actionProc: {}, killProc: {}, dismiss() {},
                   activeCard: null, confirmTarget: null, confirmAction: '', confirmOpen: false,
                   sessions: [], hostState: { razer: 'ok', p620: 'ok' }, actionError: '',
                   settleTimer: { restart() {} }, actionFinished() {},
-                  confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false };
+                  confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false,
+                  hcAvailable: true, blockedCount: 0, doneCount: 0 };
+const appMark = source.match(/readonly property bool appMark: (.+)/);
+assert.ok(appMark, 'Missing appMark property');
+Object.defineProperty(context, 'appMark', { get() { return vm.runInContext(appMark[1], context); } });
+context.root.urgent = 'URGENT'; context.root.finished = 'GREEN'; context.root.working = 'AMBER';
 vm.createContext(context);
 for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent',
                     'removeSession', 'killSession', 'askKill', 'askDelete', 'ask',
@@ -25,7 +31,7 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
                     'appRunList', 'appSubDown', 'appSubExited', 'appSubStartFailed',
                     'applyAppList', 'appMachineState', 'appRowStale', 'appRowNotLive',
                     'appLaunch', 'confirmMessage', 'subtitleFor', 'agentNote', 'agentColor',
-                    'activateCursor', 'errorLine', 'nextBackoff']) {
+                    'activateCursor', 'errorLine', 'badgeColor', 'nextBackoff']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
   assert.ok(match, `Missing function: ${name}`);
   vm.runInContext(match[0], context);
@@ -55,7 +61,28 @@ for (const host of [undefined, '', 'razer', 'p620']) {
     }
   }
 }
+{
+  const saved = [context.appStale, context.hcAvailable, context.doneCount];
+  context.doneCount = 2; context.appStale = false;
+  assert.equal(context.badgeColor(), 'GREEN');
+  context.appStale = true;
+  assert.equal(context.badgeColor(), 'URGENT', 'stale is never green');
+  context.doneCount = 0;
+  assert.equal(context.badgeColor(), 'URGENT', 'stale with no agents');
+  context.hcAvailable = false;
+  assert.equal(context.badgeColor(), 'AMBER', 'no hc, no mark');
+  [context.appStale, context.hcAvailable, context.doneCount] = saved;
+}
 console.log('PASS: local and remote open, focus, fallback, kill and delete routing');
+{
+  const badgeText = panel.match(/text: (herd\.[^\n]+)/);
+  assert.ok(badgeText, 'Missing badge text expression');
+  const shown = (blockedCount, runningCount, appMark) =>
+    vm.runInNewContext(badgeText[1], { herd: { blockedCount, runningCount, appMark } });
+  assert.equal(shown(2, 3, true), 2, 'stale keeps classic blocked count');
+  assert.equal(shown(0, 3, true), 3, 'stale keeps classic running count');
+  assert.equal(shown(0, 0, true), '!', 'stale with no count shows failure mark');
+}
 
 // A session name is only unique on its own host. Keyed by name alone, acting
 // on the local "3" dimmed razer's "3" too, and razer's agent asking blinked
@@ -634,7 +661,7 @@ console.log('PASS: a done-only list polls every 20 s');
     Object.assign(context, {
       hcAvailable: true, appStale: false, appDirty: false, appSubLive: false, appError: '',
       appSessions: [], appHostSessions: [], appMachines: [], appBackoffMs: 2000, appBackoffCur: 0,
-      appGen: 0, appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(), appRetry: timer(),
+      appGen: 0, appListRetries: 0, appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(), appRetry: timer(),
       appSubProc: { running: false, launched: false, exited: false },
       appListProc: { running: false, open: false, kind: 'applist' },
       confirmAgent: null, killSessionRef: null, killAgentRef: null,
@@ -899,7 +926,16 @@ console.log('PASS: a done-only list polls every 20 s');
   context.appListProc.running = false;
   finish(context.appListProc, '{"ok":false,"error":"boom"}', 0);
   assert.equal(context.appRetry.interval, 4000, 'the existing backoff doubles');
-  console.log('PASS: a failed app-list schedules a retry with backoff');
+  context.appRetry.running = false;
+  context.appRunList();
+  context.appListProc.running = false;
+  finish(context.appListProc, '{"ok":false,"error":"boom"}', 0);
+  assert.equal(context.appRetry.starts, 2, 'two retries, then it stops');
+  context.appLine('{"event":"heartbeat"}');
+  assert.equal(context.appListRetries, 2, 'a heartbeat does not reset the bound');
+  context.appLine('{"event":"changed"}');
+  assert.equal(context.appListRetries, 0, 'a real event resets the bound');
+  console.log('PASS: a failed app-list schedules a bounded retry with backoff');
 
   // App spaces are not herdr servers.
   appFresh();

@@ -89,7 +89,9 @@ run_dir_init() {               # idempotent; called by cmd_list and cmd_list_rem
 # through the process tree rather than signalled as a group.
 kill_tree() {
   local child
-  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  # The kernel's children list: pgrep -P scans all of /proc (~0.4 s on a busy host, per call).
+  # shellcheck disable=SC2013 # space-separated PIDs, word splitting intended
+  for child in $(cat /proc/"$1"/task/*/children 2>/dev/null); do kill_tree "$child"; done
   kill -TERM "$1" 2>/dev/null || true
 }
 run_dir_cleanup() {
@@ -322,10 +324,15 @@ app_merge_jq=$(cat <<'JQ'
         | unique_by(.address)) as $cascade
     | . + {cascade: $cascade, cascadeKey: ($cascade | map(.address) | join(","))}
     | . + {displayStatus:
-      (if $windowOpen == true and $appStatus[.address] != null then $appStatus[.address]
-       elif .status.state == "done" and $attention[.address].word == "done" and
-            $attention[.address].seen == true then "idle"
-       else .status.state end)}]
+      ((.labels["herdr.seen"] | try tonumber catch null) as $seen
+       | if $windowOpen == true and $appStatus[.address] != null then $appStatus[.address]
+         elif .status.state == "idle" or .status.state == "done" then
+           if $seen != null then
+             if ((.turn | try tonumber catch null) // 0) > $seen then "done" else "idle" end
+           elif .status.state == "done" and $attention[.address].word == "done" and
+                $attention[.address].seen == true then "idle"
+           else .status.state end
+         else .status.state end)}]
   | if $targetAddr == "" then . else map(select(.address == $targetAddr)) end as $agents
   | ($agents | group_by([.machine, .spaceId]) | map(
       . as $group | ($group[0]) as $first
@@ -341,7 +348,7 @@ app_merge_jq=$(cat <<'JQ'
           else ($first.spaceWhere | if contains(" / ") then split(" / ")[:-1] | join(" / ") else "space" end) end),
          host: $first.machine, spaceId: $first.spaceId, running:true, readable:true,
          stale:false, agents: ($shown | length),
-         blocked: ([$shown[] | select(.status == "blocked")] | length),
+         blocked: ([$shown[] | select(.status == "blocked" or .status == "error")] | length),
          done: ([$shown[] | select(.status == "done")] | length),
          working: ([$shown[] | select(.status == "working")] | length),
          hiddenAgents: (($group | length) - ($shown | length)),

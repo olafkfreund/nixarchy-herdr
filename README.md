@@ -152,6 +152,13 @@ Agents run by the herdr desktop app (herdr-core, through `hc`) show up too.
 - **"not live"** shows on a row, and its actions are refused, when herdr-core
   cannot be reached or its machine is not connected.
 
+When a read of the app's state fails, the bar badge shows a failure mark
+instead of going quiet (never green, and not when `hc` is missing); the
+plugin retries twice before it waits for the next event. An agent in the
+`error` state counts as blocked. A finished agent reads as done while its
+turn is newer than its `herdr.seen` label, and as idle once you have seen that
+turn. When the label is absent, the app window's attention decides, as above.
+
 ## What it shows
 
 The bar carries the number of running servers, on a badge sitting in the

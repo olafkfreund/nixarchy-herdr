@@ -148,6 +148,9 @@ case "$1 $2" in
       head -c "$FAKE_HC_SNAPSHOT_BYTES" /dev/zero | tr '\0' x
       printf '\n'
     else printf '%s\n' "$FAKE_HC_SNAPSHOT"; fi
+    if [[ -n ${FAKE_HC_SLEEP_AFTER_SNAPSHOT-} ]]; then
+      exec -a "$FAKE_HC_SLEEP_MARKER" sleep "$FAKE_HC_SLEEP_AFTER_SNAPSHOT"
+    fi
     # An idle core sends nothing after the snapshot (a heartbeat is 15 s apart).
     [[ -z ${FAKE_HC_IDLE-} ]] || exec sleep 30
     while :; do printf '{"heartbeat":true}\n'; sleep 0.2; done ;;
@@ -258,7 +261,8 @@ reset() {
     FAKE_LIST_SLEEP FAKE_IGNORE_TERM FAKE_SSH_SLEEP FAKE_CLIENTS_SLEEP \
     FAKE_SCREEN_BYTES FAKE_SCREEN_SUFFIX HERDR_TEST_NEW_DEADLINE \
     FAKE_SS_LINES FAKE_TERM_STICKS FAKE_CHANGE_START_ON_TERM FAKE_FOOT_RC FAKE_DISPATCH_RC \
-    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON \
+    FAKE_TERM_SLEEP FAKE_HC_SNAPSHOT FAKE_HC_SNAPSHOT_BYTES FAKE_HC_SLEEP_AFTER_SNAPSHOT FAKE_HC_SLEEP_MARKER \
+    FAKE_HC_MACHINES FAKE_APP_LS FAKE_APP_LS_FAIL FAKE_VIEW_JSON \
     FAKE_HC_SEND_OUT FAKE_HC_SEND_RC FAKE_HC_SEND_SLEEP FAKE_HC_READ_OUT FAKE_HC_READ_RC \
     FAKE_HC_INTERRUPT_OUT FAKE_HC_INTERRUPT_RC FAKE_HC_KILL_OUT FAKE_HC_KILL_RC \
     FAKE_APP_DO_ERROR FAKE_APP_DO_ERROR_ONCE FAKE_APP_PIDS \
@@ -886,7 +890,7 @@ check "58 no snapshot child left" test -z "$surviving"
 reset
 FAKE_HC_SNAPSHOT='{"seq":1,"terminals":[
   {"address":"t1","state":"live","status":null,"parent":null,"die_with_parent":false,"labels":{"herdr.space":"sp1","where":"renamed / Team / Work"},"title":"shell","argv":[],"status_ms":0},
-  {"address":"t2","state":"live","status":{"state":"done","kind":null},"parent":"t1","die_with_parent":true,"labels":{"where":"renamed / Team / Work"},"title":"agent","argv":[],"status_ms":5},
+  {"address":"t2","state":"live","status":{"state":"done","kind":null},"parent":"t1","die_with_parent":true,"labels":{"where":"renamed / Team / Work"},"title":"agent","argv":[],"turn":2,"status_ms":5},
   {"address":"t3","state":"live","status":{"state":"blocked","kind":"question"},"parent":"t2","die_with_parent":true,"labels":{},"title":"child","argv":[],"status_ms":6},
   {"address":"t4","state":"live","status":{"state":"working","kind":null},"parent":"t2","die_with_parent":false,"labels":{},"title":"other","argv":[],"status_ms":7},
   {"address":"razer/t2","state":"live","status":{"state":"working","kind":null},"parent":"t1","die_with_parent":true,"labels":{"herdr.space":"sp1","where":"remote / Tab"},"title":"remote","argv":[],"status_ms":8},
@@ -916,15 +920,40 @@ check "60 app remote and machines" jq -e '
   (.sessions[] | select(.host == "razer") | .spaceId == "sp1")' <<<"$out" ||
   printf '  got: %.500s\n' "$out"
 out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
-check "60 seen done falls back to idle" jq -e '
+check "60 no seen label falls back to attention" jq -e '
   .windowOpen == false and
   ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+base_snapshot=$FAKE_HC_SNAPSHOT
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
+  (.status.state = "idle" | .turn = 4 | .labels["herdr.seen"] = "3")' <<<"$base_snapshot")
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 unseen idle turn is done" jq -e '
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "done")' <<<"$out"
+out=$("$script" app-list)
+check "60 open window status takes precedence" jq -e '
+  .windowOpen == true and
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
+  (.turn = 4 | .labels["herdr.seen"] = "4")' <<<"$base_snapshot")
+printf '{"attention":{"t2":{"word":"done","seen":false}}}' > "$HOME/.config/herdr-app/view.json"
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 seen label wins over unseen attention" jq -e '
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+printf '{"attention":{"t2":{"word":"done","seen":true}}}' > "$HOME/.config/herdr-app/view.json"
+FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t2")) |=
+  (.labels["herdr.seen"] = "invalid")' <<<"$base_snapshot")
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 invalid seen label falls back to attention" jq -e '
+  ([.sessions[].agentList[] | select(.pane == "t2")][0].status == "idle")' <<<"$out"
+FAKE_HC_SNAPSHOT=$base_snapshot
 FAKE_HC_SNAPSHOT=$(jq -c '.terminals += [
   {address:"t6",state:"live",status:{state:"error",kind:null},parent:null,
    die_with_parent:false,labels:{"herdr.space":"sp2","where":"renamed / Team / Work"},
    title:"duplicate",argv:[],status_ms:11},
   {address:"razer/t6",state:"live",status:{state:"idle",kind:null},parent:"t1",
    die_with_parent:true,labels:{},title:"remote orphan",argv:[],status_ms:12},
+  {address:"razer/t4",state:"live",status:{state:"error",kind:null},parent:null,
+   die_with_parent:false,labels:{"herdr.space":"sp2"},title:"remote error",argv:[],status_ms:14},
   {address:"t0",state:"live",status:null,parent:"t2",die_with_parent:true,
    labels:{},title:"child shell",argv:[],status_ms:0},
   {address:"t8",state:"live",status:{state:"working",kind:null},parent:"t0",
@@ -934,9 +963,24 @@ out=$("$script" app-list --remote)
 check "60 duplicate names and deep cascade" jq -e '
   ([.sessions[] | select(.host == "" and .name == "renamed / Team")] | length) == 2 and
   ([.sessions[] | select(.host == "" and .spaceId == "sp2")][0].agentList[0].status == "error") and
+  ([.sessions[] | select(.host == "razer" and .spaceId == "sp2")][0].agentList[0].pane == "razer/t4") and
   ([.sessions[] | select(.host == "razer" and .spaceId == "_background")][0].agentList[0].pane == "razer/t6") and
   ([.sessions[].agentList[] | select(.pane == "t2")][0].cascadeKey == "t0,t3,t8")' <<<"$out" ||
   printf '  got: %.500s\n' "$out"
+out=$(FAKE_APP_LS_FAIL=refused "$script" app-list)
+check "60 closed error counts as blocked without remote" jq -e '
+  .windowOpen == false and ([.sessions[].blocked] | add) == 2 and
+  ([.sessions[] | select(.spaceId == "sp2")][0] |
+   .blocked == 1 and .agentList[0].status == "error") and
+  ([.sessions[].agentList[].pane] | index("razer/t4")) == null and
+  ([.sessions[].host] | all(. == ""))' <<<"$out"
+out=$(FAKE_APP_LS='{"spaces":[{"id":"sp2","machine":null,"tabs":[{"terminals":[{"terminal":"t6","status":"blocked"}]}]}]}' \
+  "$script" app-list)
+check "60 open error reported blocked counts as blocked without remote" jq -e '
+  .windowOpen == true and ([.sessions[].blocked] | add) == 2 and
+  ([.sessions[] | select(.spaceId == "sp2")][0] |
+   .blocked == 1 and .agentList[0].status == "blocked") and
+  ([.sessions[].agentList[].pane] | index("razer/t4")) == null' <<<"$out"
 FAKE_HC_SNAPSHOT=$(jq -c '(.terminals[] | select(.address == "t1") | .labels.where) = "new / Tab"' \
   <<<"$FAKE_HC_SNAPSHOT")
 out=$("$script" app-list)
@@ -969,8 +1013,27 @@ out=$(FAKE_APP_LS_FAIL=other "$script" app-list)
 check "62 uncertain window" jq -e '.windowOpen == null' <<<"$out"
 out=$(FAKE_HC_SNAPSHOT='bad' "$script" app-list)
 check "63 malformed snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
-out=$(FAKE_HC_SNAPSHOT_BYTES=8388610 "$script" app-list)
-check "64 oversized snapshot" jq -e '.error == "could not read herdr-core"' <<<"$out"
+
+reset
+marker="hc-events-sleeper-$BASHPID"
+start=$(date +%s%N)
+out=$(FAKE_HC_SLEEP_AFTER_SNAPSHOT=5 FAKE_HC_SLEEP_MARKER="$marker" "$script" app-list)
+took=$(( ($(date +%s%N) - start) / 1000000 ))
+hc_pid=$(awk '$1 == "hc-pid" && $3 == "events" {print $2; exit}' "$FAKE_LOG")
+[[ -z $hc_pid ]] || bg+=("$hc_pid")
+check "63 first snapshot line returns promptly" jq -e '.ok == true and .sessions == []' <<<"$out"
+check "63 first snapshot line under 1 second" test "$took" -lt 1000
+check "63 no orphan snapshot sleeper" test -z "$(pgrep -f "$marker" || true)"
+stop_bg
+
+reset
+# A bare head -n 1 must allocate the 64 MiB line and fail under this limit.
+out=$( (ulimit -v 98304; FAKE_HC_SNAPSHOT_BYTES=67108864 "$script" app-list) 2>"$tmp/oversized.err")
+check "64 oversized snapshot within memory limit" jq -e '.error == "could not read herdr-core"' <<<"$out"
+# Only an allocation failure counts; CI shells may print unrelated job notices.
+# shellcheck disable=SC2016 # $1 expands in the inner bash
+check "64 oversized snapshot without allocation failure" \
+  bash -c '! grep -qiE "memory|alloc|cannot allocate|killed" "$1"' _ "$tmp/oversized.err"
 
 mkdir -p "$tmp/only-jq"
 ln -s "$(command -v jq)" "$tmp/only-jq/jq"

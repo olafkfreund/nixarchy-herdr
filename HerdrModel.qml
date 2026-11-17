@@ -133,6 +133,10 @@ Item {
   // only says "something changed") and `herdr-sessions app-list`.
   property bool hcAvailable: true
   property bool appStale: false
+  // A failure mark for the bar badge: unconditional while stale, but never when
+  // hc is absent (that case is silent by design).
+  readonly property bool appMark: hcAvailable && appStale
+  readonly property bool badgeShown: appMark || (reachable && runningCount > 0 && badgeActive)
   property bool appDirty: false
   property bool appSubLive: false
   property string appError: ""
@@ -143,6 +147,7 @@ Item {
   property int appWatchdogMs: 40000
   property int appBackoffMs: 2000
   property int appBackoffCur: 0
+  property int appListRetries: 0
   // Bumped on a failed start and on every restart: an app-list that began
   // before then answers for a subscription that is gone, and is dropped.
   property int appGen: 0
@@ -936,6 +941,7 @@ Item {
   }
 
   function badgeColor() {
+    if (appMark) return root.urgent
     if (blockedCount > 0) return root.urgent
     if (doneCount > 0) return root.finished
     return root.working
@@ -1124,6 +1130,8 @@ Item {
     try { msg = JSON.parse(line) } catch (e) { return }
     if (!msg || typeof msg !== "object") return
     for (var k in msg) if (msg[k] === "heartbeat") return
+    appListRetries = 0
+    appRetry.stop()
     if (appListProc.open) appDirty = true
     else if (!appCoalesce.running) appCoalesce.start()
   }
@@ -1144,6 +1152,8 @@ Item {
     if (!hcAvailable || appBackoff.running) return
     appWatchdog.stop()
     appCoalesce.stop()
+    appRetry.stop()
+    appListRetries = 0
     if (appSubProc.running) { appSubProc.launched = false; appSubProc.running = false }
     appSubLive = false
     appStale = true
@@ -1190,6 +1200,8 @@ Item {
       appMachines = data.machines || []
       appError = ""
       if (appSubLive) appStale = false
+      appListRetries = 0
+      appRetry.stop()
       appBackoffCur = 0
       rebuild()
     } else {
@@ -1197,7 +1209,9 @@ Item {
       appError = data && data.error ? String(data.error)
         : code > 0 ? "herdr-sessions exited with code " + code : "unexpected output from herdr-sessions"
       // Heartbeats keep the watchdog quiet, so nothing else would ask again.
-      if (hcAvailable && !appRetry.running) {
+      // Two retries, then the stale mark waits for a real event or a restart.
+      if (hcAvailable && appSubLive && !appRetry.running && appListRetries < 2) {
+        appListRetries++
         appRetry.interval = nextBackoff()
         appRetry.start()
       }
