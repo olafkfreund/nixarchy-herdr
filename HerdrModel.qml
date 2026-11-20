@@ -401,7 +401,7 @@ Item {
   }
 
   // Starts the script for one action. Returns false, with the reason in
-  // actionError, when it cannot start. Kill has its own process.
+  // actionError, when it cannot start. Kill has its own slot; runs live in HerdrActions and outlive this model.
   function launch(action, host, name, extra, dismissOnSuccess) {
     var kind = action === "kill" ? "kill" : "action"
     var key = sessionKey({ host: host, name: name })
