@@ -4,13 +4,47 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(`${__dirname}/../HerdrModel.qml`, 'utf8');
-const context = { root: { script: 'herdr-sessions' }, actionProc: {}, killProc: {}, dismiss() {},
+const actionsSource = fs.readFileSync(`${__dirname}/../HerdrActions.qml`, 'utf8');
+const token = { remote: true };
+const actions = { owners: [], unclaimed: { menu: { action: null, kill: null } }, release() {} };
+vm.createContext(actions);
+for (const name of ['entry', 'slot', 'start', 'storeResult', 'startFailed', 'parseResult', 'finishRun', 'claimMenu']) {
+  const match = actionsSource.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
+  assert.ok(match, `Missing HerdrActions function: ${name}`);
+  vm.runInContext(match[0], actions);
+}
+const context = { root: { script: 'herdr-sessions' }, ownerToken: token, dismiss() {},
                   activeCard: null, confirmTarget: null, confirmAction: '', confirmOpen: false,
                   sessions: [], hostState: { razer: 'ok', p620: 'ok' }, actionError: '',
                   settleTimer: { restart() {} }, actionFinished() {},
                   confirmAgent: null, appSessions: [], appHostSessions: [], appMachines: [], appStale: false,
                   hcAvailable: true, blockedCount: 0, doneCount: 0, workingCount: 0,
                   blinkTimer: { restart() {}, stop() {} }, textMissing: false };
+const resetSlots = () => {
+  const pair = { token, alive: true,
+    action: { kind: 'action', owner: token, running: false, meta: {} },
+    kill: { kind: 'kill', owner: token, running: false, meta: {} } };
+  actions.owners = [pair];
+  actions.unclaimed = { menu: { action: null, kill: null } };
+};
+resetSlots();
+context.HerdrActions = {
+  start: (...args) => actions.start(...args),
+  slot: (...args) => actions.slot(...args),
+  claimMenu: () => actions.claimMenu(),
+};
+for (const [prop, kind] of [['actionProc', 'action'], ['killProc', 'kill']]) {
+  Object.defineProperty(context, prop, {
+    get: () => actions.owners[0][kind],
+    set: (proc) => { Object.assign(proc, { kind, owner: token, meta: proc.meta || {} }); actions.owners[0][kind] = proc; },
+  });
+}
+for (const [prop, kind, key] of [
+  ['actionName', 'action', 'actionName'], ['actionDismiss', 'action', 'actionDismiss'],
+  ['pendingKey', 'action', 'pendingKey'], ['killPendingKey', 'kill', 'killPendingKey'],
+  ['killSessionRef', 'kill', 'session'], ['killAgentRef', 'kill', 'agent'],
+]) Object.defineProperty(context, prop, { get: () => actions.owners[0][kind].meta[key] || (key === 'actionDismiss' ? false : '') });
+actions.finished = (owner, kind, meta, result) => { if (owner === token) context.onResult(kind, meta, result); };
 const appMark = source.match(/readonly property bool appMark: (.+)/);
 assert.ok(appMark, 'Missing appMark property');
 Object.defineProperty(context, 'appMark', { get() { return vm.runInContext(appMark[1], context); } });
@@ -20,7 +54,7 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
                     'removeSession', 'killSession', 'askKill', 'askDelete', 'ask',
                     'closeConfirm', 'confirmPending', 'sessionKey', 'agentKey', 'agentWants',
                     'blinking', 'updateAttention', 'refresh', 'applyHostPayload',
-                    'launch', 'storeResult', 'complete', 'hostUnchecked', 'stateOfHost',
+                    'launch', 'storeResult', 'complete', 'onResult', 'claimActions', 'hostUnchecked', 'stateOfHost',
                     'sessionLabel', 'rowKey', 'navRowsFor', 'rowAt', 'sessionAt', 'rebuild',
                     'bestRow', 'attentionRank', 'agentAt', 'priority',
                     'moveCursor', 'cursorToAgent', 'cursorToSession',
@@ -38,6 +72,12 @@ for (const name of ['validName', 'validPane', 'run', 'openSession', 'focusAgent'
 }
 
 const real = { rebuild: context.rebuild, applyHostPayload: context.applyHostPayload, complete: context.complete };
+const pollStoreResult = context.storeResult;
+const pollStartFailed = context.startFailed;
+context.storeResult = (proc, which, value) =>
+  proc.kind === 'action' || proc.kind === 'kill' ? actions.storeResult(proc, which, value) : pollStoreResult(proc, which, value);
+context.startFailed = (proc) =>
+  proc.kind === 'action' || proc.kind === 'kill' ? actions.startFailed(proc) : pollStartFailed(proc);
 for (const host of [undefined, '', 'razer', 'p620']) {
   for (const name of ['same-name', 'default']) {
     const session = { name, host, running: true, isDefault: name === 'default' };
@@ -197,10 +237,11 @@ console.log('PASS: themeColor falls back unless the theme names a colour');
 // Everything below drives the model's logic with stub processes. `fresh` gives
 // every case a clean slate.
 const fresh = () => {
+  resetSlots();
   Object.assign(context, real);
   Object.assign(context, {
     actionProc: { running: false, kind: 'action' }, killProc: { running: false, kind: 'kill' },
-    actionError: '', actionName: '', actionDismiss: false, pendingKey: '', killPendingKey: '',
+    actionError: '',
     hostState: { razer: 'ok' }, hostNames: [], hostSessions: {}, sessions: [], localSessions: [],
     remote: true, opened: true, pollGen: 0, cursor: -1, cursorPlaced: false,
     reachable: true, errorText: '', hiddenSessions: 0, unreadableCount: 0,
@@ -246,14 +287,15 @@ console.log('PASS: kill is not blocked by a running action');
 for (const order of [['out', 'exit'], ['exit', 'out']]) {
   fresh();
   let calls = 0;
-  const realComplete = context.complete;
-  context.complete = () => { calls++; };
-  const proc = { kind: 'action' };
+  const realResult = context.onResult;
+  context.onResult = () => { calls++; };
+  const proc = context.actionProc;
+  proc.open = true;
   for (const which of order) context.storeResult(proc, which, which === 'out' ? '{}' : 0);
-  context.complete = realComplete;
-  assert.equal(calls, 1, `complete must run once, order ${order}`);
+  context.onResult = realResult;
+  assert.equal(calls, 1, `action must complete once, order ${order}`);
 }
-console.log('PASS: complete runs once in either signal order');
+console.log('PASS: action completes once in either signal order');
 
 // Quickshell 0.3.2 reports a command that cannot start only by `running`
 // going false: no stdout, no exit. That run must still complete, once.
@@ -489,7 +531,7 @@ console.log('PASS: a done-only list polls every 20 s');
       appGen: 0, appListRetries: 0, appCoalesce: timer(), appWatchdog: timer(), appBackoff: timer(), appRetry: timer(),
       appSubProc: { running: false, launched: false, exited: false },
       appListProc: { running: false, open: false, kind: 'applist' },
-      confirmAgent: null, killSessionRef: null, killAgentRef: null,
+      confirmAgent: null,
       beginConfirms: 0, emitted: 0, prompts: 0,
       activeCard: { beginConfirm() { context.beginConfirms++; }, endConfirm() {} },
       newSessionRequested() { context.emitted++; }, promptRequested() { context.prompts++; },
@@ -704,7 +746,9 @@ console.log('PASS: a done-only list polls every 20 s');
   const [kA, kB] = context.sessions[0].agentList;
   context.appKill(context.sessions[0], kA);
   assert.equal(context.killProc.running, true);
+  const runningMeta = context.killProc.meta;
   context.appKill(context.sessions[0], kB);
+  assert.equal(context.killProc.meta, runningMeta, 'a refused start leaves the running slot meta untouched');
   assert.equal(context.killAgentRef, kA, 'the running kill keeps its target');
   assert.match(context.actionError, /busy/);
   console.log('PASS: an overlapping kill does not overwrite the running target');
