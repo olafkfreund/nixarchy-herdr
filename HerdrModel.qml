@@ -261,7 +261,7 @@ Item {
     }
   }
 
-  // One completion per run. Only an action may dismiss the surface.
+  // One completion per poll run; action and kill results arrive in onResult().
   function complete(kind, out, code, proc) {
     if (kind === "list") { applyPayload(out, code); return }
     if (kind === "applist") { applyAppList(out, code, proc.gen); return }
@@ -307,7 +307,8 @@ Item {
         : item.result.ok ? item.result.note : item.result.error
       if (message) errors.push(message)
     }
-    actionError = errors.join("; ")
+    // A silent success claimed while open must not wipe an error on screen.
+    if (errors.length > 0) actionError = errors.join("; ")
     settleTimer.restart()
     appRunList()
   }

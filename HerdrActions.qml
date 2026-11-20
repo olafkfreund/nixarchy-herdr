@@ -95,7 +95,8 @@ Singleton {
   }
 
   function startFailed(proc) {
-    if (!proc.open) return
+    // Exited already: the output is still on its way, not a failed start.
+    if (!proc.open || proc.gotExit) return
     finishRun(proc, JSON.stringify({ ok: false, error: "could not start herdr-sessions" }), -1)
   }
 
