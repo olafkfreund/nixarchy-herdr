@@ -140,6 +140,9 @@ ShellRoot {
         m = spawn(true, false)
         HerdrActions.start(m.ownerToken, "action", ["/nonexistent/herdr-sessions"],
           { pendingKey: "k", actionName: "new", actionDismiss: false })
+        // Unregister in the same tick, before the failed start is reported;
+        // destroy() alone is deferred and could lose that race.
+        HerdrActions.unregister(m.ownerToken)
         unload(m)
       })
       add("stored", hasPending("action"), function () {
@@ -163,7 +166,8 @@ ShellRoot {
         b2.launch("focus", "", "x2", "", false)
         m2.launch("focus", "", "x3", "", false)
         if (b1.launch("focus", "", "y", "", false)) return fail("a second start in a busy slot must be refused")
-        check(b1.actionError.indexOf("busy:") === 0, "busy message, got '" + b1.actionError + "'")
+        if (!check(b1.actionError === "busy: focus is still running", "busy message, got '" + b1.actionError + "'")) return false
+        return check(b1.pendingKey === b1.sessionKey({ host: "", name: "x1" }), "pending key while running, got '" + b1.pendingKey + "'")
       })
       add("all runs done", function () {
         return exists("marker-focus-o") && exists("marker-focus-x1") && exists("marker-focus-x2") && exists("marker-focus-x3")
@@ -173,6 +177,7 @@ ShellRoot {
         return check(b1.actionError === "note-x1" && b2.actionError === "note-x2" && m2.actionError === "note-x3",
             "each result must reach its own model: '" + b1.actionError + "' '" + b2.actionError + "' '" + m2.actionError + "'")
           && check(pending("action").result.error === "orphan err", "bars must not claim the menu result")
+          && check(b1.pendingKey === "", "pending key cleared after the run, got '" + b1.pendingKey + "'")
       })
     }
   }

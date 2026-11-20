@@ -27,7 +27,9 @@ Singleton {
         onStreamFinished: root.storeResult(proc, "out", text)
       }
       onExited: function (exitCode) { root.storeResult(proc, "exit", exitCode) }
-      onRunningChanged: if (!running) root.startFailed(proc)
+      // Quickshell may clear running after both signals arrived, so an
+      // orphaned pair is released here as well as in finishRun.
+      onRunningChanged: if (!running) { root.startFailed(proc); root.releaseOwner(proc.owner) }
     }
   }
 
@@ -54,6 +56,11 @@ Singleton {
     pair.action.destroy()
     pair.kill.destroy()
     owners.splice(owners.indexOf(pair), 1)
+  }
+
+  function releaseOwner(owner) {
+    var pair = entry(owner)
+    if (pair) release(pair)
   }
 
   function unregister(owner) {
@@ -130,6 +137,8 @@ Singleton {
 
   function claimMenu() {
     var taken = unclaimed.menu
+    // Reassigning when empty would fire unclaimedChanged, which claims again.
+    if (!taken.action && !taken.kill) return taken
     unclaimed = { menu: { action: null, kill: null } }
     return taken
   }

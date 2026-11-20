@@ -42,6 +42,10 @@ for c in 1 2 3 4 5 6 7; do
     7) echo '{"ok":false,"error":"orphan err"}' > "$dir/reply-focus-o"
        for x in x1 x2 x3; do echo "{\"ok\":true,\"note\":\"note-$x\"}" > "$dir/reply-focus-$x"; done ;;
   esac
+  log="$dir/qs.log"
   RUN_MARK=$$ CASE=$c TEST_DIR=$dir QT_QPA_PLATFORM=offscreen PATH="$tmp/bin:$PATH" \
-    timeout 30 qs -p "$tmp/shell/unload.qml"
+    timeout 30 qs -p "$tmp/shell/unload.qml" >"$log" 2>&1 || { cat "$log"; echo "FAIL: case $c"; exit 1; }
+  cat "$log"
+  # A recursion or type error the engine swallows still fails the case.
+  if grep -qE 'RangeError|TypeError|ReferenceError' "$log"; then echo "FAIL: case $c logged a JS error"; exit 1; fi
 done
