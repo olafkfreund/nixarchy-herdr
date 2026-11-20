@@ -110,12 +110,12 @@ Item {
   // list not arriving; this is about the one thing you just pressed, which
   // otherwise failed by leaving the row exactly where it was.
   property string actionError: ""
-  // The action actionProc is running, and whether finishing it should close
-  // the surface. Only one runs at a time, so these need no key.
-  property string actionName: ""
-  property bool actionDismiss: false
-  // Kill has its own process, so a slow kill never blocks opening a window.
-  property string killPendingKey: ""
+  property string ownerToken: ""
+  readonly property var actionSlot: HerdrActions.slot(ownerToken, "action")
+  readonly property var killSlot: HerdrActions.slot(ownerToken, "kill")
+  readonly property string actionName: actionSlot ? actionSlot.meta.actionName || "" : ""
+  readonly property bool actionDismiss: actionSlot ? actionSlot.meta.actionDismiss === true : false
+  readonly property string killPendingKey: killSlot ? killSlot.meta.killPendingKey || "" : ""
   // Sessions the script left out of the list for size, and running servers
   // whose agents it could not read.
   property int hiddenSessions: 0
@@ -124,7 +124,7 @@ Item {
   property int pollGen: 0
   // Session the script is currently acting on, as sessionKey(), so its row
   // can dim.
-  property string pendingKey: ""
+  readonly property string pendingKey: actionSlot ? actionSlot.meta.pendingKey || "" : ""
   // The session the confirm dialog is asking about, held while it is open,
   // and which of the two destructive actions it will run on Confirm.
   property var confirmTarget: null
@@ -133,8 +133,8 @@ Item {
   // The agent an app kill is asking about, and the one a kill is running on,
   // so a `changed` reply can reopen the question with the new cascade.
   property var confirmAgent: null
-  property var killSessionRef: null
-  property var killAgentRef: null
+  readonly property var killSessionRef: killSlot ? killSlot.meta.session || null : null
+  readonly property var killAgentRef: killSlot ? killSlot.meta.agent || null : null
 
   // herdr-core and herdr-app, read through `hc events` (a subscription that
   // only says "something changed") and `herdr-sessions app-list`.
@@ -261,7 +261,7 @@ Item {
     }
   }
 
-  // One completion per run. Only an action may dismiss the surface.
+  // One completion per poll run; action and kill results arrive in onResult().
   function complete(kind, out, code, proc) {
     if (kind === "list") { applyPayload(out, code); return }
     if (kind === "applist") { applyAppList(out, code, proc.gen); return }
@@ -270,34 +270,47 @@ Item {
       applyHostPayload(proc.modelData, code === 0 ? out : "")
       return
     }
-    var data = null
-    try { data = JSON.parse(out) } catch (e) { data = null }
-    var ok = data !== null && data.ok === true && code === 0
-    var action = kind === "kill" ? "kill" : actionName
-    if (kind === "kill") killPendingKey = ""
-    else pendingKey = ""
+  }
+
+  function onResult(kind, meta, result) {
+    var action = kind === "kill" ? "kill" : meta.actionName
     // The cascade moved since it was shown: ask again with the new one.
-    if (kind === "kill" && data && data.changed === true && killSessionRef && killAgentRef) {
-      confirmTarget = killSessionRef
-      confirmAgent = Object.assign({}, killAgentRef,
-        { cascade: data.cascade || [], cascadeKey: String(data.cascadeKey || "") })
+    if (kind === "kill" && result.changed && meta.session && meta.agent) {
+      confirmTarget = meta.session
+      confirmAgent = Object.assign({}, meta.agent,
+        { cascade: result.cascade, cascadeKey: result.cascadeKey })
       confirmAction = "appkill"
       confirmOpen = true
       actionError = ""
       if (activeCard) activeCard.beginConfirm()
       return
     }
-    if (ok) actionError = data.note ? String(data.note) : ""
-    else if (data && data.error) actionError = String(data.error)
-    else if (code !== 0) actionError = "herdr-sessions exited with code " + code
-    else actionError = data ? action + " failed" : "unexpected output from herdr-sessions"
+    actionError = result.ok ? result.note : result.error
     if (kind === "action") {
-      if (ok && actionDismiss) dismiss()
-      actionFinished(action, ok)
+      if (result.ok && meta.actionDismiss) dismiss()
+      actionFinished(action, result.ok)
     }
     // A stopped server disappears from the list, and a freshly opened window
     // takes a moment to register its agents. One beat, then look again.
     settleTimer.restart()
+  }
+
+  function claimActions() {
+    var taken = HerdrActions.claimMenu()
+    if (!taken.action && !taken.kill) return
+    var errors = []
+    for (var kind of ["action", "kill"]) {
+      var item = taken[kind]
+      if (!item) continue
+      var message = kind === "kill" && item.result.changed && item.meta.session && item.meta.agent
+        ? "the agents to end changed; press the key again"
+        : item.result.ok ? item.result.note : item.result.error
+      if (message) errors.push(message)
+    }
+    // A silent success claimed while open must not wipe an error on screen.
+    if (errors.length > 0) actionError = errors.join("; ")
+    settleTimer.restart()
+    appRunList()
   }
 
   // Everything drawn, local first and then each host in the order the config
@@ -389,26 +402,19 @@ Item {
   }
 
   // Starts the script for one action. Returns false, with the reason in
-  // actionError, when it cannot start. Kill has its own process.
+  // actionError, when it cannot start. Kill has its own slot; runs live in HerdrActions and outlive this model.
   function launch(action, host, name, extra, dismissOnSuccess) {
-    var proc = action === "kill" ? killProc : actionProc
-    if (proc.running || proc.open) {
-      actionError = "busy: " + (action === "kill" ? "kill" : actionName) + " is still running"
-      return false
-    }
+    var kind = action === "kill" ? "kill" : "action"
     var key = sessionKey({ host: host, name: name })
-    if (action === "kill") killPendingKey = key
-    else { pendingKey = key; actionName = action; actionDismiss = dismissOnSuccess === true }
+    var meta = kind === "kill" ? { killPendingKey: key }
+      : { pendingKey: key, actionName: action, actionDismiss: dismissOnSuccess === true }
     var command = [root.script]
     if (host) command.push("--host", host)
     command.push(action, name)
     if (extra !== undefined && extra !== "") command.push(extra)
-    proc.gotOut = false
-    proc.gotExit = false
-    proc.open = true
-    proc.command = command
-    proc.running = true
-    return true
+    if (HerdrActions.start(ownerToken, kind, command, meta)) return true
+    actionError = "busy: " + (kind === "kill" ? "kill" : actionName) + " is still running"
+    return false
   }
 
   function run(action, session, extra, dismissOnSuccess) {
@@ -1097,21 +1103,14 @@ Item {
     return true
   }
 
-  // One app command on actionProc, or on killProc for a kill.
-  function appLaunch(command, label, dismissOnSuccess, key, killing) {
-    var proc = killing ? killProc : actionProc
-    if (proc.running || proc.open) {
-      actionError = "busy: " + (killing ? "kill" : actionName) + " is still running"
-      return false
-    }
-    if (killing) killPendingKey = key
-    else { pendingKey = key; actionName = label; actionDismiss = dismissOnSuccess === true }
-    proc.gotOut = false
-    proc.gotExit = false
-    proc.open = true
-    proc.command = [root.script].concat(command)
-    proc.running = true
-    return true
+  // Action and kill use separate slots so neither blocks the other.
+  function appLaunch(command, label, dismissOnSuccess, key, killing, refs) {
+    var kind = killing ? "kill" : "action"
+    var meta = killing ? { killPendingKey: key, session: refs.session, agent: refs.agent }
+      : { pendingKey: key, actionName: label, actionDismiss: dismissOnSuccess === true }
+    if (HerdrActions.start(ownerToken, kind, [root.script].concat(command), meta)) return true
+    actionError = "busy: " + (killing ? "kill" : actionName) + " is still running"
+    return false
   }
 
   function requestInterrupt() {
@@ -1131,12 +1130,8 @@ Item {
 
   function appKill(session, agent) {
     if (appRowNotLive(session)) return
-    // Only once accepted: a refused kill must not retarget the one running.
-    if (appLaunch(["app-kill", agent.pane, String(agent.cascadeKey || "")], "kill", false,
-                  sessionKey(session), true)) {
-      killSessionRef = session
-      killAgentRef = agent
-    }
+    appLaunch(["app-kill", agent.pane, String(agent.cascadeKey || "")], "kill", false,
+              sessionKey(session), true, { session: session, agent: agent })
   }
 
   // Always three arguments, so an empty directory or machine stays in place.
@@ -1298,6 +1293,7 @@ Item {
   onOpenedChanged: {
     if (opened) {
       actionError = ""
+      if (remote) claimActions()
       hostState = ({})
       // A poll still exiting from the last opening starts over when it does.
       for (var p = 0; p < hostPolls.count; p++) {
@@ -1398,36 +1394,6 @@ Item {
   }
 
   Process {
-    id: actionProc
-    property string kind: "action"
-    property string out: ""
-    property int code: 0
-    property bool gotOut: false
-    property bool gotExit: false
-    property bool open: false
-    stdout: StdioCollector {
-      onStreamFinished: root.storeResult(actionProc, "out", text)
-    }
-    onExited: function (exitCode) { root.storeResult(actionProc, "exit", exitCode) }
-    onRunningChanged: if (!running) root.startFailed(actionProc)
-  }
-
-  Process {
-    id: killProc
-    property string kind: "kill"
-    property string out: ""
-    property int code: 0
-    property bool gotOut: false
-    property bool gotExit: false
-    property bool open: false
-    stdout: StdioCollector {
-      onStreamFinished: root.storeResult(killProc, "out", text)
-    }
-    onExited: function (exitCode) { root.storeResult(killProc, "exit", exitCode) }
-    onRunningChanged: if (!running) root.startFailed(killProc)
-  }
-
-  Process {
     id: appSubProc
     property bool launched: false
     property bool exited: false
@@ -1479,7 +1445,21 @@ Item {
     onTriggered: root.appStart()
   }
 
-  Component.onCompleted: appStart()
+  Component.onCompleted: {
+    ownerToken = HerdrActions.register(remote)
+    appStart()
+  }
+  Component.onDestruction: HerdrActions.unregister(ownerToken)
+
+  Connections {
+    target: HerdrActions
+    function onFinished(owner, kind, meta, result) {
+      if (owner === root.ownerToken) root.onResult(kind, meta, result)
+    }
+    function onUnclaimedChanged() {
+      if (root.remote && root.opened) root.claimActions()
+    }
+  }
 
   Timer {
     id: settleTimer

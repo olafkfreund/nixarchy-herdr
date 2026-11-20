@@ -6,7 +6,9 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'pkill -f "[s]leep 32\.$$" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/shell/bin" "$tmp/bin"
-cp "$here/HerdrModel.qml" "$here/tests/text-scale.qml" "$tmp/shell/"
+cp "$here/qmldir" "$here/HerdrActions.qml" "$here/HerdrModel.qml" "$here/tests/text-scale.qml" "$tmp/shell/"
+# A qmldir hides unlisted types from a root file in its directory; the plugin never loads HerdrModel that way.
+echo "HerdrModel 1.0 HerdrModel.qml" >> "$tmp/shell/qmldir"
 cp -r "$here/tests/app-subscription-stubs/Commons" "$tmp/shell/Commons"
 
 cat > "$tmp/shell/bin/herdr-sessions" <<'STUB'
